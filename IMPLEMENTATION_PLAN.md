@@ -67,6 +67,13 @@ Comprehensive build plan with design-review updates applied and Redis removed.
    - Attributes: current step, failure reason, compensation status, payload
    - TTL: enabled
 
+7. **ProductViews** *(denormalized read model — CQRS)*
+   - PK: `productId`
+   - Attributes: `name`, `description`, `price`, `categoryId`, `categoryName`, `images`, `metadata`, `createdAt`, `updatedAt`
+   - GSI: `categoryIndex(categoryId, createdAt)` — paginated listing by category
+   - Built synchronously during `CreateProduct` / `UpdateProduct` — the Lambda writes to both `Products` (source of truth) and `ProductViews` (read model) in parallel
+   - When a category is renamed, a fan-out Lambda updates all affected `ProductView` items to keep `categoryName` consistent
+
 ### 2.2 Inventory Reservation Algorithm
 
 Reservation uses **`TransactWriteItems`** for atomicity across cart items:

@@ -5,17 +5,14 @@
  * Each error includes a structured payload for logging and debugging.
  */
 
-export class AppError extends Error {
-  public readonly statusCode: number;
-  public readonly code: string;
-  public readonly details?: Record<string, unknown>;
-
-  constructor(
-    message: string,
-    statusCode: number,
-    code: string,
-    details?: Record<string, unknown>
-  ) {
+class AppError extends Error {
+  /**
+   * @param {string} message
+   * @param {number} statusCode
+   * @param {string} code
+   * @param {Record<string, unknown>} [details]
+   */
+  constructor(message, statusCode, code, details) {
     super(message);
     this.name = this.constructor.name;
     this.statusCode = statusCode;
@@ -42,8 +39,12 @@ export class AppError extends Error {
  * Thrown when inventory reservation fails (out of stock, shard contention).
  * Step Functions catches this to skip payment and return "out of stock".
  */
-export class InventoryError extends AppError {
-  constructor(message: string, details?: Record<string, unknown>) {
+class InventoryError extends AppError {
+  /**
+   * @param {string} message
+   * @param {Record<string, unknown>} [details]
+   */
+  constructor(message, details) {
     super(message, 409, "INVENTORY_ERROR", details);
   }
 }
@@ -52,8 +53,12 @@ export class InventoryError extends AppError {
  * Thrown when payment processing fails (card declined, gateway timeout).
  * Step Functions catches this to trigger CompensateInventory.
  */
-export class PaymentError extends AppError {
-  constructor(message: string, details?: Record<string, unknown>) {
+class PaymentError extends AppError {
+  /**
+   * @param {string} message
+   * @param {Record<string, unknown>} [details]
+   */
+  constructor(message, details) {
     super(message, 402, "PAYMENT_ERROR", details);
   }
 }
@@ -62,8 +67,12 @@ export class PaymentError extends AppError {
  * Thrown when order creation in DynamoDB fails.
  * Step Functions catches this to trigger RefundPayment + CompensateInventory.
  */
-export class OrderError extends AppError {
-  constructor(message: string, details?: Record<string, unknown>) {
+class OrderError extends AppError {
+  /**
+   * @param {string} message
+   * @param {Record<string, unknown>} [details]
+   */
+  constructor(message, details) {
     super(message, 500, "ORDER_ERROR", details);
   }
 }
@@ -72,8 +81,12 @@ export class OrderError extends AppError {
  * Thrown when input validation fails (bad request).
  * Step Functions catches this and returns immediately — no compensation needed.
  */
-export class ValidationError extends AppError {
-  constructor(message: string, details?: Record<string, unknown>) {
+class ValidationError extends AppError {
+  /**
+   * @param {string} message
+   * @param {Record<string, unknown>} [details]
+   */
+  constructor(message, details) {
     super(message, 400, "VALIDATION_ERROR", details);
   }
 }
@@ -81,8 +94,11 @@ export class ValidationError extends AppError {
 /**
  * Thrown when a user tries to access a resource they don't own.
  */
-export class AuthorizationError extends AppError {
-  constructor(message: string = "Forbidden") {
+class AuthorizationError extends AppError {
+  /**
+   * @param {string} [message]
+   */
+  constructor(message = "Forbidden") {
     super(message, 403, "AUTHORIZATION_ERROR");
   }
 }
@@ -90,8 +106,22 @@ export class AuthorizationError extends AppError {
 /**
  * Thrown when a requested resource doesn't exist.
  */
-export class NotFoundError extends AppError {
-  constructor(resource: string, id: string) {
+class NotFoundError extends AppError {
+  /**
+   * @param {string} resource
+   * @param {string} id
+   */
+  constructor(resource, id) {
     super(`${resource} not found: ${id}`, 404, "NOT_FOUND", { resource, id });
   }
 }
+
+module.exports = {
+  AppError,
+  InventoryError,
+  PaymentError,
+  OrderError,
+  ValidationError,
+  AuthorizationError,
+  NotFoundError,
+};

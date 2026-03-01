@@ -1,4 +1,4 @@
-import { Tracer } from "@aws-lambda-powertools/tracer";
+const { Tracer } = require("@aws-lambda-powertools/tracer");
 
 /**
  * Shared Tracer instance.
@@ -10,7 +10,9 @@ import { Tracer } from "@aws-lambda-powertools/tracer";
  * Set POWERTOOLS_TRACER_CAPTURE_RESPONSE=true and
  * POWERTOOLS_TRACER_CAPTURE_ERROR=true via Lambda env vars.
  */
-export const tracer = new Tracer({
+const tracer = new Tracer({
   serviceName: process.env.SERVICE_NAME ?? "ordering-system",
   captureHTTPsRequests: true,
 });
+
+module.exports = { tracer };

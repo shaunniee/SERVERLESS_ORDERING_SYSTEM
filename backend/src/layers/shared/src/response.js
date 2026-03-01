@@ -1,12 +1,14 @@
-import { APIGatewayProxyResult } from "aws-lambda";
-import { AppError } from "./errors";
-import { logger } from "./logger";
-import { ZodError } from "zod";
+const { AppError } = require("./errors");
+const { logger } = require("./logger");
+const { ZodError } = require("zod");
 
 /**
  * Standard success response.
+ * @param {unknown} body
+ * @param {number} [statusCode=200]
+ * @returns {{ statusCode: number, headers: Record<string,string>, body: string }}
  */
-export function success(body: unknown, statusCode = 200): APIGatewayProxyResult {
+function success(body, statusCode = 200) {
   return {
     statusCode,
     headers: {
@@ -21,8 +23,10 @@ export function success(body: unknown, statusCode = 200): APIGatewayProxyResult 
 /**
  * Standard error response.
  * Converts known error types to appropriate HTTP status codes.
+ * @param {unknown} err
+ * @returns {{ statusCode: number, headers: Record<string,string>, body: string }}
  */
-export function error(err: unknown): APIGatewayProxyResult {
+function error(err) {
   // Known application errors
   if (err instanceof AppError) {
     logger.warn("Application error", { error: err.toJSON() });
@@ -74,3 +78,5 @@ export function error(err: unknown): APIGatewayProxyResult {
     }),
   };
 }
+
+module.exports = { success, error };

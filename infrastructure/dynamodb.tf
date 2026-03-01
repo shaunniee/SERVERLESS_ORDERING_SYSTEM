@@ -130,6 +130,44 @@ module "inventoryShards" {
     }
 }
 
+# ProductView table — denormalized read model built on product creation
+# Stores product data enriched with categoryName so reads avoid cross-table lookups
+
+module "product_view_table" {
+  source       = "git::https://github.com/shaunniee/terraform_modules.git//aws_dynamodb?ref=main"
+  table_name   = "${var.project_name}-product-views"
+  hash_key     = "productId"
+  billing_mode = "PAY_PER_REQUEST"
+  attributes = [
+    {
+      name = "productId"
+      type = "S"
+    },
+    {
+      name = "categoryId"
+      type = "S"
+    },
+    {
+      name = "createdAt"
+      type = "S"
+    }
+  ]
+
+  global_secondary_indexes = [
+    {
+      name            = "categoryIndex"
+      hash_key        = "categoryId"
+      range_key       = "createdAt"
+      projection_type = "ALL"
+    }
+  ]
+
+  server_side_encryption = {
+    enabled = true
+    kms_key_arn = null
+  }
+}
+
 # Idempotency table
 
 module "idempotency_table" {

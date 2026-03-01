@@ -1,13 +1,13 @@
-import { z } from "zod";
+const { z } = require("zod");
 
 // ─── Order Schemas ───────────────────────────────────────────────────────────
 
-export const OrderItemSchema = z.object({
+const OrderItemSchema = z.object({
   productId: z.string().min(1, "productId is required"),
   quantity: z.number().int().positive("quantity must be a positive integer"),
 });
 
-export const CreateOrderInputSchema = z.object({
+const CreateOrderInputSchema = z.object({
   userId: z.string().min(1, "userId is required"),
   orderId: z.string().min(1, "orderId is required"),
   idempotencyKey: z.string().min(1, "idempotencyKey is required"),
@@ -17,12 +17,9 @@ export const CreateOrderInputSchema = z.object({
     .max(50, "maximum 50 items per order"),
 });
 
-export type CreateOrderInput = z.infer<typeof CreateOrderInputSchema>;
-export type OrderItem = z.infer<typeof OrderItemSchema>;
-
 // ─── Inventory Schemas ───────────────────────────────────────────────────────
 
-export const ReserveInventoryInputSchema = z.object({
+const ReserveInventoryInputSchema = z.object({
   orderId: z.string().min(1),
   userId: z.string().min(1),
   items: z
@@ -36,9 +33,7 @@ export const ReserveInventoryInputSchema = z.object({
     .max(50),
 });
 
-export type ReserveInventoryInput = z.infer<typeof ReserveInventoryInputSchema>;
-
-export const CompensateInventoryInputSchema = z.object({
+const CompensateInventoryInputSchema = z.object({
   orderId: z.string().min(1),
   items: z
     .array(
@@ -51,38 +46,66 @@ export const CompensateInventoryInputSchema = z.object({
     .min(1),
 });
 
-export type CompensateInventoryInput = z.infer<typeof CompensateInventoryInputSchema>;
-
 // ─── Inventory Admin Schemas ─────────────────────────────────────────────────
 
-export const UpdateInventoryInputSchema = z.object({
+const UpdateInventoryInputSchema = z.object({
   productId: z.string().min(1),
   totalQuantity: z.number().int().nonnegative(),
   shardCount: z.number().int().min(1).max(20),
 });
 
-export type UpdateInventoryInput = z.infer<typeof UpdateInventoryInputSchema>;
-
 // ─── Category Schemas ────────────────────────────────────────────────────────
 
-export const CreateCategoryInputSchema = z.object({
+const CreateCategoryInputSchema = z.object({
   name: z.string().min(1).max(100),
   parentId: z.string().optional(),
 });
 
-export type CreateCategoryInput = z.infer<typeof CreateCategoryInputSchema>;
-
-export const UpdateCategoryInputSchema = z.object({
+const UpdateCategoryInputSchema = z.object({
   categoryId: z.string().min(1),
   name: z.string().min(1).max(100).optional(),
   parentId: z.string().optional(),
 });
 
-export type UpdateCategoryInput = z.infer<typeof UpdateCategoryInputSchema>;
+// ─── Product Schemas ─────────────────────────────────────────────────────────
+
+const CreateProductInputSchema = z.object({
+  name: z.string().min(1).max(200),
+  description: z.string().max(2000).optional(),
+  price: z.number().positive(),
+  categoryId: z.string().min(1),
+  images: z.array(z.string().url()).max(10).optional(),
+  metadata: z.record(z.string()).optional(),
+});
+
+const UpdateProductInputSchema = z.object({
+  productId: z.string().min(1),
+  name: z.string().min(1).max(200).optional(),
+  description: z.string().max(2000).optional(),
+  price: z.number().positive().optional(),
+  categoryId: z.string().min(1).optional(),
+  images: z.array(z.string().url()).max(10).optional(),
+  metadata: z.record(z.string()).optional(),
+});
+
+// ─── ProductView Schema (denormalized read model) ────────────────────────────
+
+const ProductViewSchema = z.object({
+  productId: z.string().min(1),
+  name: z.string().min(1),
+  description: z.string().optional(),
+  price: z.number().positive(),
+  categoryId: z.string().min(1),
+  categoryName: z.string().min(1),
+  images: z.array(z.string()).optional(),
+  metadata: z.record(z.string()).optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
 
 // ─── Payment Schemas ─────────────────────────────────────────────────────────
 
-export const ProcessPaymentInputSchema = z.object({
+const ProcessPaymentInputSchema = z.object({
   orderId: z.string().min(1),
   userId: z.string().min(1),
   totalAmount: z.number().positive(),
@@ -90,22 +113,38 @@ export const ProcessPaymentInputSchema = z.object({
   idempotencyKey: z.string().min(1),
 });
 
-export type ProcessPaymentInput = z.infer<typeof ProcessPaymentInputSchema>;
-
-export const RefundPaymentInputSchema = z.object({
+const RefundPaymentInputSchema = z.object({
   orderId: z.string().min(1),
   paymentId: z.string().min(1),
   amount: z.number().positive(),
   idempotencyKey: z.string().min(1),
 });
 
-export type RefundPaymentInput = z.infer<typeof RefundPaymentInputSchema>;
-
 // ─── Pagination ──────────────────────────────────────────────────────────────
 
-export const PaginationSchema = z.object({
+const PaginationSchema = z.object({
   limit: z.number().int().min(1).max(100).default(20),
   nextToken: z.string().optional(),
 });
 
-export type PaginationInput = z.infer<typeof PaginationSchema>;
+module.exports = {
+  // Order
+  OrderItemSchema,
+  CreateOrderInputSchema,
+  // Inventory
+  ReserveInventoryInputSchema,
+  CompensateInventoryInputSchema,
+  UpdateInventoryInputSchema,
+  // Category
+  CreateCategoryInputSchema,
+  UpdateCategoryInputSchema,
+  // Product
+  CreateProductInputSchema,
+  UpdateProductInputSchema,
+  ProductViewSchema,
+  // Payment
+  ProcessPaymentInputSchema,
+  RefundPaymentInputSchema,
+  // Pagination
+  PaginationSchema,
+};

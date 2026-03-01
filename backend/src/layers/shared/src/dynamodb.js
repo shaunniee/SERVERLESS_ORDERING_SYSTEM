@@ -1,6 +1,6 @@
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { tracer } from "./tracer";
+const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
+const { DynamoDBDocumentClient } = require("@aws-sdk/lib-dynamodb");
+const { tracer } = require("./tracer");
 
 /**
  * Shared DynamoDB Document Client.
@@ -17,7 +17,7 @@ const ddbClient = tracer.captureAWSv3Client(
   })
 );
 
-export const docClient = DynamoDBDocumentClient.from(ddbClient, {
+const docClient = DynamoDBDocumentClient.from(ddbClient, {
   marshallOptions: {
     removeUndefinedValues: true,
     convertEmptyValues: false,
@@ -31,11 +31,14 @@ export const docClient = DynamoDBDocumentClient.from(ddbClient, {
  * Table names from environment variables.
  * Set via Lambda environment configuration in Terraform.
  */
-export const TableNames = {
+const TableNames = {
   PRODUCTS: process.env.PRODUCTS_TABLE_NAME ?? "dev-products",
   CATEGORIES: process.env.CATEGORIES_TABLE_NAME ?? "dev-categories",
   ORDERS: process.env.ORDERS_TABLE_NAME ?? "dev-orders",
-  INVENTORY_SHARDS: process.env.INVENTORY_SHARDS_TABLE_NAME ?? "dev-inventory-shards",
+  INVENTORY_SHARDS:
+    process.env.INVENTORY_SHARDS_TABLE_NAME ?? "dev-inventory-shards",
   IDEMPOTENCY: process.env.IDEMPOTENCY_TABLE_NAME ?? "dev-idempotency",
   SAGA_STATE: process.env.SAGA_STATE_TABLE_NAME ?? "dev-saga-state",
-} as const;
+};
+
+module.exports = { docClient, TableNames };

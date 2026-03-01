@@ -1,4 +1,4 @@
-import { Logger } from "@aws-lambda-powertools/logger";
+const { Logger } = require("@aws-lambda-powertools/logger");
 
 /**
  * Shared Logger instance.
@@ -12,10 +12,12 @@ import { Logger } from "@aws-lambda-powertools/logger";
  * - functionName, functionVersion, memorySize
  * - JSON structured format
  */
-export const logger = new Logger({
+const logger = new Logger({
   serviceName: process.env.SERVICE_NAME ?? "ordering-system",
-  logLevel: (process.env.LOG_LEVEL as "DEBUG" | "INFO" | "WARN" | "ERROR") ?? "INFO",
+  logLevel: process.env.LOG_LEVEL ?? "INFO",
   persistentLogAttributes: {
     environment: process.env.ENV ?? "dev",
   },
 });
+
+module.exports = { logger };
