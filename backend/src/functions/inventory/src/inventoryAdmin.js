@@ -1,6 +1,7 @@
 const {
-  QueryCommand,
+  GetCommand,
   BatchWriteCommand,
+  PutCommand,
 } = require("@aws-sdk/lib-dynamodb");
 const {
   logger,
@@ -12,19 +13,38 @@ const {
   error,
 } = require("@ordering-system/shared-layer");
 
+// ─── Partition Key Helpers ───────────────────────────────────────────────────
+
+/**
+ * @param {string} productId
+ * @param {number} shardId
+ * @returns {string}
+ */
+function shardPk(productId, shardId) {
+  return `PRODUCT#${productId}#SHARD#${shardId}`;
+}
+
+/**
+ * @param {string} productId
+ * @returns {string}
+ */
+function metaPk(productId) {
+  return `PRODUCT#${productId}#META`;
+}
+
 // ─── Core Logic ──────────────────────────────────────────────────────────────
 
 /**
- * Initialize or re‐shard inventory for a product.
+ * Initialize or re‐shard inventory for a product using partition-key sharding.
  *
  * Strategy:
- * 1. Delete all existing shards for the product (if any).
- * 2. Create `shardCount` new shards with evenly distributed quantities.
- * 3. Remainder from integer division goes to shard 0.
+ * 1. Read existing META to find old shardCount (if any).
+ * 2. Delete all existing shard items + META.
+ * 3. Write new shard items with evenly distributed quantities.
+ * 4. Write the META record with the new shardCount.
  *
- * This is an admin operation — not in the order hot path.
- * Re-sharding while orders are in flight may cause reservation failures
- * (acceptable: the saga retries or rejects the order).
+ * Each shard gets its own partition key: PRODUCT#<productId>#SHARD#<n>
+ * This distributes writes across DynamoDB's partition map.
  *
  * @param {{ productId: string, totalQuantity: number, shardCount: number }} input
  * @returns {Promise<{ productId: string, shardCount: number, qtyPerShard: number, remainder: number, updatedAt: string }>}
@@ -32,7 +52,7 @@ const {
 async function initializeShards(input) {
   const { productId, totalQuantity, shardCount } = input;
 
-  logger.info("Initializing inventory shards", {
+  logger.info("Initializing inventory shards (partition-key sharding)", {
     productId,
     totalQuantity,
     shardCount,
@@ -46,13 +66,14 @@ async function initializeShards(input) {
   const remainder = totalQuantity % shardCount;
   const now = new Date().toISOString();
 
-  // 3. Batch-write new shards (BatchWriteItem supports up to 25 items)
+  // 3. Batch-write new shard items (each with its own PK)
   const putRequests = [];
   for (let i = 0; i < shardCount; i++) {
     const qty = i === 0 ? qtyPerShard + remainder : qtyPerShard;
     putRequests.push({
       PutRequest: {
         Item: {
+          pk: shardPk(productId, i),
           productId,
           shardId: i,
           availableQty: qty,
@@ -76,6 +97,20 @@ async function initializeShards(input) {
     );
   }
 
+  // 4. Write META record
+  await docClient.send(
+    new PutCommand({
+      TableName: TableNames.INVENTORY_SHARDS,
+      Item: {
+        pk: metaPk(productId),
+        productId,
+        shardCount,
+        totalQuantity,
+        updatedAt: now,
+      },
+    })
+  );
+
   logger.info("Inventory shards initialized", {
     productId,
     shardCount,
@@ -93,30 +128,39 @@ async function initializeShards(input) {
 }
 
 /**
- * Delete all existing shards for a product.
+ * Delete all existing shard items and META record for a product.
  * @param {string} productId
  */
 async function deleteExistingShards(productId) {
-  // Query existing shard keys
-  const result = await docClient.send(
-    new QueryCommand({
+  // Read META to learn current shard count
+  const metaResult = await docClient.send(
+    new GetCommand({
       TableName: TableNames.INVENTORY_SHARDS,
-      KeyConditionExpression: "productId = :pk",
-      ExpressionAttributeValues: { ":pk": productId },
-      ProjectionExpression: "productId, shardId",
+      Key: { pk: metaPk(productId) },
+      ProjectionExpression: "shardCount",
     })
   );
 
-  if (!result.Items || result.Items.length === 0) {
-    return; // no existing shards to delete
+  if (!metaResult.Item) {
+    return; // no existing shards
   }
 
-  // Batch-delete existing shards
-  const deleteRequests = result.Items.map((item) => ({
+  const { shardCount } = metaResult.Item;
+
+  // Build delete requests for all shard PKs + META
+  const deleteRequests = [];
+  for (let i = 0; i < shardCount; i++) {
+    deleteRequests.push({
+      DeleteRequest: {
+        Key: { pk: shardPk(productId, i) },
+      },
+    });
+  }
+  deleteRequests.push({
     DeleteRequest: {
-      Key: { productId: item.productId, shardId: item.shardId },
+      Key: { pk: metaPk(productId) },
     },
-  }));
+  });
 
   const chunks = chunkArray(deleteRequests, 25);
   for (const chunk of chunks) {
@@ -131,7 +175,7 @@ async function deleteExistingShards(productId) {
 
   logger.info("Deleted existing shards", {
     productId,
-    count: result.Items.length,
+    count: shardCount,
   });
 }
 
@@ -158,7 +202,7 @@ function chunkArray(arr, size) {
  * REST: PUT /v1/admin/inventory
  * Body: { productId, totalQuantity, shardCount }
  *
- * Initializes or re-shards inventory for a product.
+ * Initializes or re-shards inventory for a product using partition-key sharding.
  * Admin-only (Cognito admin group required at API Gateway level).
  *
  * @param {import("aws-lambda").APIGatewayProxyEvent} event

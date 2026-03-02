@@ -11,6 +11,17 @@ const {
   InventoryError,
 } = require("@ordering-system/shared-layer");
 
+// ─── Partition Key Helpers ───────────────────────────────────────────────────
+
+/**
+ * @param {string} productId
+ * @param {number} shardId
+ * @returns {string}
+ */
+function shardPk(productId, shardId) {
+  return `PRODUCT#${productId}#SHARD#${shardId}`;
+}
+
 // ─── Core Handler ────────────────────────────────────────────────────────────
 
 /**
@@ -22,6 +33,7 @@ const {
  * Reverses a previous reservation by atomically restoring availableQty and
  * reducing reservedQty on the exact shards that were reserved.
  *
+ * Uses partition-key sharding: key is PRODUCT#<productId>#SHARD#<shardId>.
  * Uses TransactWriteItems for atomicity. Idempotent via Lambda Powertools.
  *
  * @param {object} event
@@ -40,7 +52,7 @@ const compensateInventory = async (event) => {
   const transactItems = items.map((item) => ({
     Update: {
       TableName: TableNames.INVENTORY_SHARDS,
-      Key: { productId: item.productId, shardId: Number(item.shardId) },
+      Key: { pk: shardPk(item.productId, Number(item.shardId)) },
       UpdateExpression:
         "SET availableQty = availableQty + :qty, reservedQty = reservedQty - :qty, updatedAt = :now",
       ConditionExpression: "reservedQty >= :qty",
@@ -57,8 +69,6 @@ const compensateInventory = async (event) => {
     );
   } catch (err) {
     if (err instanceof Error && err.name === "TransactionCanceledException") {
-      // Compensation failed — this shouldn't happen under normal conditions.
-      // Log as error for investigation; do not retry blindly.
       logger.error("Compensation transaction failed", {
         orderId,
         error: err.message,

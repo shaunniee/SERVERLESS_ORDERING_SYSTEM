@@ -106,28 +106,26 @@ module "orders_table" {
   stream_view_type = "NEW_AND_OLD_IMAGES"
 
 }
-# Inventory table shards
+# Inventory table — partition-key sharding
+# Each shard gets its own partition key: PRODUCT#<productId>#SHARD#<n>
+# A metadata item uses key: PRODUCT#<productId>#META
+# No sort key — each item is in a distinct DynamoDB partition for maximum write throughput
 
 module "inventoryShards" {
   source       = "git::https://github.com/shaunniee/terraform_modules.git//aws_dynamodb?ref=main"
-    table_name   = "${var.project_name}-inventory-shards"
-  hash_key    = "productId"
+  table_name   = "${var.project_name}-inventory-shards"
+  hash_key     = "pk"
   billing_mode = "PAY_PER_REQUEST"
-  range_key   = "shardId"
-  attributes   = [
+  attributes = [
     {
-      name = "productId"
+      name = "pk"
       type = "S"
-    },
-    {
-        name ="shardId"
-        type = "N"
     }
   ]
-    server_side_encryption = {
-        enabled = true
-        kms_key_arn = null
-    }
+  server_side_encryption = {
+    enabled = true
+    kms_key_arn = null
+  }
 }
 
 # ProductView table — denormalized read model built on product creation

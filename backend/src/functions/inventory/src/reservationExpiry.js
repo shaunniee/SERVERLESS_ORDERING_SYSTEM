@@ -7,11 +7,23 @@ const {
   InventoryError,
 } = require("@ordering-system/shared-layer");
 
+// ─── Partition Key Helpers ───────────────────────────────────────────────────
+
+/**
+ * @param {string} productId
+ * @param {number} shardId
+ * @returns {string}
+ */
+function shardPk(productId, shardId) {
+  return `PRODUCT#${productId}#SHARD#${shardId}`;
+}
+
 // ─── Core Logic ──────────────────────────────────────────────────────────────
 
 /**
  * Compensate inventory for a single expired reservation.
  * Restores availableQty and reduces reservedQty atomically.
+ * Uses partition-key sharding: key is PRODUCT#<productId>#SHARD#<shardId>.
  *
  * @param {{ orderId: string, userId: string, items: Array<{ productId: string, shardId: number, quantity: number }> }} order
  */
@@ -27,7 +39,7 @@ async function compensateExpiredReservation(order) {
   const transactItems = items.map((item) => ({
     Update: {
       TableName: TableNames.INVENTORY_SHARDS,
-      Key: { productId: item.productId, shardId: item.shardId },
+      Key: { pk: shardPk(item.productId, item.shardId) },
       UpdateExpression:
         "SET availableQty = availableQty + :qty, reservedQty = reservedQty - :qty, updatedAt = :now",
       ConditionExpression: "reservedQty >= :qty",
@@ -73,9 +85,6 @@ async function compensateExpiredReservation(order) {
  * This is the safety net for reservations abandoned by crashed sagas.
  * The compensation is idempotent — safe if the saga already completed.
  *
- * The stream may include other events (INSERT, MODIFY, non-RESERVED removals)
- * — those are filtered out silently.
- *
  * @param {import("aws-lambda").DynamoDBStreamEvent} event
  * @param {import("aws-lambda").Context} context
  */
@@ -101,8 +110,7 @@ module.exports.handler = async (event, context) => {
     const status = oldImage.status?.S;
     if (status !== "RESERVED") continue;
 
-    // Check if this was a TTL deletion (userIdentity.type === "Service",
-    // principalId === "dynamodb.amazonaws.com")
+    // Check if this was a TTL deletion
     const isSystemDelete =
       record.userIdentity && record.userIdentity.type === "Service";
 
@@ -122,7 +130,6 @@ module.exports.handler = async (event, context) => {
     }
 
     // Parse reserved items from the old image
-    // Items are stored as a list of maps in the order record
     const reservedItemsList = oldImage.reservedItems?.L;
     if (!reservedItemsList || reservedItemsList.length === 0) {
       logger.warn("Expired order has no reservedItems", { orderId });
@@ -157,8 +164,7 @@ module.exports.handler = async (event, context) => {
     count: expiredOrders.length,
   });
 
-  // Process each expired order — errors are logged but don't fail the batch
-  // (DynamoDB Streams will retry the entire batch on failure)
+  // Process each expired order
   const results = await Promise.allSettled(
     expiredOrders.map((order) => compensateExpiredReservation(order))
   );

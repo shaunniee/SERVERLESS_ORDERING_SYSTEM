@@ -51,10 +51,12 @@ Comprehensive build plan with design-review updates applied and Redis removed.
    - GSI: `StatusIndex(statusMonth, createdAt)` where `statusMonth = "STATUS#YYYY-MM"`
    - Stream: enabled (`NEW_AND_OLD_IMAGES`)
 
-4. **InventoryShards**
-   - PK: `productId`, SK: `shardId` (`shard-0`, `shard-1`, ...)
-   - Attributes: `availableQty`, `reservedQty`, `version`, `updatedAt`
-   - Optional SK=`meta`: `totalQuantity`, `shardCount`
+4. **InventoryShards** *(partition-key sharding)*
+   - PK: `pk` = `PRODUCT#<productId>#SHARD#<n>` — each shard in its own DynamoDB partition for maximum write throughput
+   - Metadata item: PK = `PRODUCT#<productId>#META` — stores `shardCount`, `productId`
+   - Shard item attributes: `productId`, `shardId`, `availableQty`, `reservedQty`, `version`, `updatedAt`
+   - No sort key — all lookups are `GetItem` / `BatchGetItem` by exact PK
+   - Reads: `GetItem` the META record to learn `shardCount`, then `BatchGetItem` all shard PKs
 
 5. **Idempotency** *(schema managed by Lambda Powertools)*
    - PK: `id` (Powertools default key name)

@@ -1,6 +1,7 @@
 const {
   TransactWriteCommand,
-  QueryCommand,
+  GetCommand,
+  BatchGetCommand,
 } = require("@aws-sdk/lib-dynamodb");
 const { makeIdempotent } = require("@aws-lambda-powertools/idempotency");
 const {
@@ -18,33 +19,89 @@ const {
 
 const RESERVATION_TTL_SECONDS = 5 * 60; // 5 minutes
 
+// ─── Partition Key Helpers ───────────────────────────────────────────────────
+
+/**
+ * Build the partition key for an inventory shard.
+ * Pattern: PRODUCT#<productId>#SHARD#<shardId>
+ *
+ * @param {string} productId
+ * @param {number} shardId
+ * @returns {string}
+ */
+function shardPk(productId, shardId) {
+  return `PRODUCT#${productId}#SHARD#${shardId}`;
+}
+
+/**
+ * Build the partition key for the inventory metadata record.
+ * Pattern: PRODUCT#<productId>#META
+ *
+ * @param {string} productId
+ * @returns {string}
+ */
+function metaPk(productId) {
+  return `PRODUCT#${productId}#META`;
+}
+
 // ─── Shard Lookup ────────────────────────────────────────────────────────────
 
 /**
- * Query all shards for a product and return them.
- * Shard count is small (1-20), so this is a lightweight query.
+ * Fetch all shard items for a product using partition-key sharding.
+ *
+ * 1. GetItem on the META record to learn shardCount.
+ * 2. BatchGetItem all shard PKs.
  *
  * @param {string} productId
- * @returns {Promise<Array<{ shardId: number, availableQty: number }>>}
+ * @returns {Promise<Array<{ pk: string, shardId: number, availableQty: number }>>}
  */
 async function getShardsForProduct(productId) {
-  const result = await docClient.send(
-    new QueryCommand({
+  // 1. Read metadata to learn shard count
+  const metaResult = await docClient.send(
+    new GetCommand({
       TableName: TableNames.INVENTORY_SHARDS,
-      KeyConditionExpression: "productId = :pk",
-      ExpressionAttributeValues: { ":pk": productId },
-      ProjectionExpression: "shardId, availableQty",
+      Key: { pk: metaPk(productId) },
+      ProjectionExpression: "shardCount",
     })
   );
 
-  if (!result.Items || result.Items.length === 0) {
+  if (!metaResult.Item) {
+    throw new InventoryError(
+      `No inventory metadata found for product: ${productId}`,
+      { productId }
+    );
+  }
+
+  const { shardCount } = metaResult.Item;
+
+  // 2. BatchGetItem all shard partition keys
+  const keys = [];
+  for (let i = 0; i < shardCount; i++) {
+    keys.push({ pk: shardPk(productId, i) });
+  }
+
+  const batchResult = await docClient.send(
+    new BatchGetCommand({
+      RequestItems: {
+        [TableNames.INVENTORY_SHARDS]: {
+          Keys: keys,
+          ProjectionExpression: "pk, shardId, availableQty",
+        },
+      },
+    })
+  );
+
+  const items =
+    batchResult.Responses?.[TableNames.INVENTORY_SHARDS] ?? [];
+
+  if (items.length === 0) {
     throw new InventoryError(
       `No inventory shards found for product: ${productId}`,
       { productId }
     );
   }
 
-  return result.Items;
+  return items;
 }
 
 /**
@@ -69,6 +126,10 @@ function pickShard(shards, requiredQty) {
  *
  * Called by the order saga (Step Functions). Reserves inventory for all items
  * in a cart using a single DynamoDB TransactWriteItems call (all-or-nothing).
+ *
+ * Uses partition-key sharding: each shard has its own PK
+ * (PRODUCT#<productId>#SHARD#<n>) so writes are distributed across
+ * DynamoDB's partition map for maximum throughput.
  *
  * On success: returns the reserved items with their shard assignments.
  * On failure: throws InventoryError with details about which items failed.
@@ -103,14 +164,14 @@ const reserveInventory = async (event) => {
     return { productId: item.productId, shardId, quantity: item.quantity };
   });
 
-  // 3. Build TransactWriteItems — one Update per item
+  // 3. Build TransactWriteItems — one Update per item using partition-key sharding
   const now = new Date().toISOString();
   const expiresAt = Math.floor(Date.now() / 1000) + RESERVATION_TTL_SECONDS;
 
   const transactItems = reservedItems.map((item) => ({
     Update: {
       TableName: TableNames.INVENTORY_SHARDS,
-      Key: { productId: item.productId, shardId: item.shardId },
+      Key: { pk: shardPk(item.productId, item.shardId) },
       UpdateExpression:
         "SET availableQty = availableQty - :qty, reservedQty = reservedQty + :qty, updatedAt = :now",
       ConditionExpression: "availableQty >= :qty",
