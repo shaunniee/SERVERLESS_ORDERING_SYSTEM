@@ -33,7 +33,7 @@ module "create_order_lambda" {
   # Environment variables
   environment_variables = {
     ORDERS_TABLE       = module.order_table.table_name
-    ORDER_QUEUE_URL    = aws_sqs_queue.order_queue.url
+    ORDER_QUEUE_URL    = module.order_queue.queue_url
     IDEMPOTENCY_TABLE  = module.idempotency_table.table_name
     POWERTOOLS_SERVICE_NAME = "createOrder"
     POWERTOOLS_METRICS_NAMESPACE = "OrderingSystem"
@@ -70,7 +70,7 @@ module "create_order_lambda" {
           Action = [
             "sqs:SendMessage"
           ]
-          Resource = aws_sqs_queue.order_queue.arn
+          Resource = module.order_queue.queue_arn
         }
       ]
     })
