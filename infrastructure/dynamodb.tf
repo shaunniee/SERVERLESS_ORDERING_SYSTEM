@@ -1,216 +1,69 @@
-# Products Table
+# Order table
 
-module "products_table" {
-  source       = "git::https://github.com/shaunniee/terraform_modules.git//aws_dynamodb?ref=main"
-  table_name   = "${var.project_name}-products"
-  hash_key    = "productId"
+module "order_table" {
+  source = "git::https://github.com/shaunniee/terraform_modules.git//aws_dynamodb?ref=main"
+  table_name = "${var.project_name}-orders-table"
   billing_mode = "PAY_PER_REQUEST"
-    attributes   = [
-    {
-      name = "productId"
-      type = "S"
-    },
-    {
-        name ="categoryId"
-        type = "S"
-    }
-  ]
+  hash_key = "orderId"
+  point_in_time_recovery_enabled = true
 
-  global_secondary_indexes = [
-    {
-      name            = "categoryIndex"
-      hash_key        = "categoryId"
-      projection_type = "ALL"
-    }
-  ]
-
-  server_side_encryption = {
-    enabled = true
-    kms_key_arn = null
-  }
-
-}
-
-# Categories Table
-module "categories_table" {
-  source       = "git::https://github.com/shaunniee/terraform_modules.git//aws_dynamodb?ref=main"
-  table_name   = "${var.project_name}-categories"
-  hash_key    = "categoryId"
-  billing_mode = "PAY_PER_REQUEST"
-    attributes   = [
-    {
-      name = "categoryId"
-      type = "S"
-    }
-  ]
-
-  server_side_encryption = {
-    enabled = true
-    kms_key_arn = null
-  }
-
-}
-
-#orders table
-module "orders_table" {
-  source       = "git::https://github.com/shaunniee/terraform_modules.git//aws_dynamodb?ref=main"
-    table_name   = "${var.project_name}-orders"
-    hash_key    = "userId"
-    range_key   = "orderId"
-    billing_mode = "PAY_PER_REQUEST"
-    attributes   = [
+  attributes = [
     {
       name = "orderId"
       type = "S"
     },
     {
-        name ="userId"
+        name = "createdAt"
         type = "S"
     },
     {
-        name ="status"
+        name = "userId"
         type = "S"
-    },
-    {
-        name ="statusMonth"
-        type = "S"
-    },
-    {
-        name ="createdAt"
-        type = "S"
-    },
-    {
-        name ="expiresAt"
-        type = "N"
     }
   ]
 
   global_secondary_indexes = [
     {
-      name            = "statusIndex"
-      hash_key        = "statusMonth"
-      range_key       = "createdAt"
+      name = "userId-createdAt-index"
+      hash_key = "userId"
+      range_key = "createdAt"
       projection_type = "ALL"
     }
   ]
-  ttl={
-    enabled = true
-    attribute_name = "expiresAt"
-  }
 
-  server_side_encryption = {
-    enabled = true
-    kms_key_arn = null
-  }
-  stream_enabled = true
-  stream_view_type = "NEW_AND_OLD_IMAGES"
-
-}
-# Inventory table — partition-key sharding
-# Each shard gets its own partition key: PRODUCT#<productId>#SHARD#<n>
-# A metadata item uses key: PRODUCT#<productId>#META
-# No sort key — each item is in a distinct DynamoDB partition for maximum write throughput
-
-module "inventoryShards" {
-  source       = "git::https://github.com/shaunniee/terraform_modules.git//aws_dynamodb?ref=main"
-  table_name   = "${var.project_name}-inventory-shards"
-  hash_key     = "pk"
-  billing_mode = "PAY_PER_REQUEST"
-  attributes = [
-    {
-      name = "pk"
-      type = "S"
-    }
-  ]
-  server_side_encryption = {
-    enabled = true
-    kms_key_arn = null
-  }
+ 
 }
 
-# ProductView table — denormalized read model built on product creation
-# Stores product data enriched with categoryName so reads avoid cross-table lookups
 
-module "product_view_table" {
-  source       = "git::https://github.com/shaunniee/terraform_modules.git//aws_dynamodb?ref=main"
-  table_name   = "${var.project_name}-product-views"
-  hash_key     = "productId"
+# Inventory Table
+
+module "inventory_table" {
+  source = "git::https://github.com/shaunniee/terraform_modules.git//aws_dynamodb?ref=main"
+  table_name = "${var.project_name}-inventory-table"
   billing_mode = "PAY_PER_REQUEST"
+  hash_key = "productId"
+  point_in_time_recovery_enabled = true
+
   attributes = [
     {
       name = "productId"
       type = "S"
-    },
-    {
-      name = "categoryId"
-      type = "S"
-    },
-    {
-      name = "createdAt"
-      type = "S"
     }
   ]
-
-  global_secondary_indexes = [
-    {
-      name            = "categoryIndex"
-      hash_key        = "categoryId"
-      range_key       = "createdAt"
-      projection_type = "ALL"
-    }
-  ]
-
-  server_side_encryption = {
-    enabled = true
-    kms_key_arn = null
-  }
 }
-
-# Idempotency table
 
 module "idempotency_table" {
-  source       = "git::https://github.com/shaunniee/terraform_modules.git//aws_dynamodb?ref=main"
-    table_name   = "${var.project_name}-idempotency"
-  hash_key    = "id"
-    billing_mode = "PAY_PER_REQUEST"
-    attributes   = [
-        {
-        name = "id"
-        type = "S"
-        }
-    ]
-    ttl={
-        enabled = true
-    }
-    server_side_encryption = {
-        enabled = true
-        kms_key_arn = null
-    }
-}
+  source     = "git::https://github.com/shaunniee/terraform_modules.git//aws_dynamodb?ref=main"
+  table_name = "${var.project_name}-idempotency-table"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key   = "id"
 
-# Saga State table
+  attributes = [
+    { name = "id", type = "S" }
+  ]
 
-module "saga_state_table" {
-  source       = "git::https://github.com/shaunniee/terraform_modules.git//aws_dynamodb?ref=main"
-    table_name   = "${var.project_name}-saga-state"
-  hash_key    = "sagaId"
-    billing_mode = "PAY_PER_REQUEST"
-    attributes   = [
-        {
-        name = "sagaId"
-        type = "S"
-        },
-        {
-        name = "expiresAt"
-        type = "N"
-        }
-    ]
-    ttl={
-        enabled = true
-        attribute_name = "expiresAt"
-    }
-    server_side_encryption = {
-        enabled = true
-        kms_key_arn = null
-    }
+  ttl = {
+    attribute_name = "expiration"
+    enabled        = true
+  }
 }

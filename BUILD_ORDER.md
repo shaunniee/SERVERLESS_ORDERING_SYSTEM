@@ -1,462 +1,918 @@
-# Build Order: Serverless Ordering System
+# Build Order & Implementation Plan
 
-Step-by-step dependency-aware build sequence. Each step lists what it depends on and what it unblocks.
+## High-Scale Event-Driven Order Processing System
 
----
-
-## Dependency Map
-
-```
-[1] Terraform Backend
- └──► [2] Cognito
- └──► [3] DynamoDB Tables
-       ├──► [4] Lambda Layer (Powertools + shared utils)
-       │     ├──► [5] Inventory Lambdas
-       │     │     └──► [8] Step Functions Saga ◄── [7] Payment Lambdas
-       │     │                                  ◄── [6] Order Lambdas
-       │     ├──► [6] Order Lambdas
-       │     ├──► [7] Payment Lambdas
-       │     ├──► [9] Catalog Lambdas
-       │     └──► [10] Admin Lambdas
-       └──► [11] ReservationExpiry Lambda (needs Orders stream)
- └──► [12] SQS Queue + DLQ
-       └──► [13] SQS Trigger Lambda ──► [8] (already built)
- └──► [14] SNS Topics
-       └──► [15] NotifyUser Lambda
-[8] Step Functions Saga
- └──► [16] AppSync API ◄── [9] Catalog Lambdas
- └──► [17] API Gateway REST ◄── [9] Catalog Lambdas
-[16] + [17]
- └──► [18] WAF + Security Tightening
- └──► [19] CloudWatch Dashboards + Alarms
- └──► [20] Integration Tests
-       └──► [21] Load / Concurrency Tests
-```
+**Generated:** 2026-03-04
+**Target:** 10,000+ orders/min via Saga-based distributed architecture on AWS
 
 ---
 
-## Build Steps
+## Current State Assessment
 
-### Step 1: Terraform Backend + Provider
-**Depends on:** nothing  
-**Unblocks:** everything
-
-```
-Create:
-  infrastructure/backend.tf        — S3 state bucket + DynamoDB lock table
-  infrastructure/providers.tf      — AWS provider, region, default tags
-  infrastructure/variables.tf      — env, project name, region
-  infrastructure/environments/dev.tfvars
-```
-
-Verify: `terraform init` + `terraform plan` succeed.
-
----
-
-### Step 2: Cognito User Pool
-**Depends on:** Step 1  
-**Unblocks:** API auth (Steps 16, 17)
-
-```
-Create:
-  infrastructure/modules/cognito/main.tf
-    - User Pool (email/password)
-    - App Client
-    - User Groups: "customer", "admin"
-  infrastructure/modules/cognito/outputs.tf
-    - user_pool_id, user_pool_arn, app_client_id
-```
-
-Verify: sign up a test user, get a JWT, decode it, confirm group claim.
+| Component | Status |
+|-----------|--------|
+| Terraform provider & variables | ✅ Done |
+| Terraform remote backend (S3) | ⬜ Not started |
+| `.gitignore` | ⬜ Not started |
+| DynamoDB tables (+ GSI) | ⬜ Empty file exists |
+| Lambda Layer (Powertools + SDK) | ⬜ Not started |
+| Lambda functions | ⬜ Empty directories |
+| IAM roles (per-Lambda) | ⬜ Not started |
+| SQS / DLQ | ⬜ Not started |
+| API Gateway (+ request validation) | ⬜ Not started |
+| Step Functions (Express) | ⬜ Not started |
+| EventBridge | ⬜ Not started |
+| Observability (X-Ray, CloudWatch) | ⬜ Not started |
+| Unit / integration tests | ⬜ Not started |
+| Load testing (k6) | ⬜ Not started |
 
 ---
 
-### Step 3: DynamoDB Tables
-**Depends on:** Step 1  
-**Unblocks:** all Lambdas (Steps 4-11)
+## Conventions
 
-```
-Create:
-  infrastructure/modules/dynamodb/main.tf
-    - Products       (PK: productId, GSI: CategoryIndex)
-    - Categories     (PK: categoryId)
-    - Orders         (PK: userId, SK: orderId, GSI: StatusIndex, Stream, TTL)
-    - InventoryShards (PK: productId, SK: shardId)
-    - Idempotency    (PK: id, TTL on expiration)  ← Powertools schema
-    - SagaState      (PK: sagaId, TTL)
-  infrastructure/modules/dynamodb/outputs.tf
-    - table ARNs, stream ARN, table names
-```
-
-Verify: all tables active, GSIs active, stream enabled on Orders, TTL enabled.
+- **Terraform directory:** `infrastructure/`
+- **Lambda source:** `backend/lambdas/`
+- **Runtime:** Node.js 20.x (or Python 3.12 — choose one)
+- **Naming prefix:** `${var.env}-${var.project_name}` → e.g. `dev-ser-ord-sys`
+- **Region:** `eu-west-1`
 
 ---
 
-### Step 4: Lambda Layer (Shared)
-**Depends on:** Step 3 (needs table names as env vars)  
-**Unblocks:** all Lambdas (Steps 5-11, 13, 15)
+## Phase 1 — Core Foundations
+
+> **Goal:** Stand up project scaffolding, data layer, Lambda Layer, and the first Lambda.
+
+### 1.0 Project Scaffolding
+
+#### `.gitignore`
+
+**File:** `.gitignore`
 
 ```
-Create:
-  src/layers/shared/
-    package.json               — Powertools + Zod + AWS SDK v3
-    tsconfig.json
-    src/
-      logger.ts                — Powertools Logger instance
-      tracer.ts                — Powertools Tracer instance
-      idempotency.ts           — DynamoDBPersistenceLayer config
-      errors.ts                — InventoryError, PaymentError, OrderError
-      schemas/                 — Zod validation schemas per operation
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+.terraform.lock.hcl
 
-  infrastructure/modules/lambda/layer.tf
-    - Lambda Layer from src/layers/shared/
+# Lambda Layer build artifacts
+backend/layers/shared-deps/nodejs/node_modules/
+backend/layers/shared-deps/shared-deps-layer.zip
+
+# Node
+node_modules/
+
+# OS
+.DS_Store
 ```
 
-Verify: layer publishes, can be attached to a test Lambda, imports work.
+#### Terraform Remote Backend
+
+**File:** `infrastructure/backend.tf`
+
+| Task | Details |
+|------|---------||
+| S3 bucket for state | `ser-ord-sys-terraform-state` (create manually or via bootstrap script) |
+| DynamoDB table for locking | `ser-ord-sys-terraform-locks` (PK: `LockID`) |
+| Backend block | `backend "s3" { bucket, key, region, dynamodb_table, encrypt = true }` |
+| Run `terraform init` | Migrates local state to S3 |
+
+#### Terraform Outputs (early)
+
+**File:** `infrastructure/outputs.tf`
+
+| Output | Value |
+|--------|-------|
+| `api_url` | `aws_api_gateway_deployment.*.invoke_url` |
+| `orders_table_name` | `aws_dynamodb_table.orders.name` |
+| `orders_table_arn` | `aws_dynamodb_table.orders.arn` |
+| `inventory_table_name` | `aws_dynamodb_table.inventory.name` |
+| `inventory_table_arn` | `aws_dynamodb_table.inventory.arn` |
+| `order_queue_url` | `aws_sqs_queue.order_queue.url` |
+| `dlq_url` | `aws_sqs_queue.order_dlq.url` |
+| `state_machine_arn` | `aws_sfn_state_machine.saga.arn` |
+| `event_bus_name` | `aws_cloudwatch_event_bus.orders.name` |
+| `lambda_layer_arn` | `aws_lambda_layer_version.shared_deps.arn` |
+
+Define stubs early so Terraform validates; values populate as resources are created in later phases.
+
+### 1.1 DynamoDB Tables
+
+**File:** `infrastructure/dynamodb.tf`
+
+| Task | Details |
+|------|---------||
+| Create **Orders** table | PK: `orderId` (S), billing mode: PAY_PER_REQUEST |
+| Create **Inventory** table | PK: `productId` (S), billing mode: PAY_PER_REQUEST |
+| Enable point-in-time recovery | Both tables |
+| Add TTL attribute (optional) | `expiresAt` on Orders for cleanup |
+| **GSI: `userId-createdAt-index`** | PK: `userId` (S), SK: `createdAt` (S), projection: ALL — enables "get all orders for user" queries without table scans |
+| Create **Idempotency** table | PK: `id` (S), TTL on `expiration`, PAY_PER_REQUEST — used by Powertools Idempotency to cache responses and prevent duplicate order creation |
+
+### 1.2 IAM Foundation (Per-Lambda Least Privilege)
+
+**File:** `infrastructure/iam.tf`
+
+Each Lambda gets its **own IAM role** with only the permissions it needs. A compromised or mis-coded function cannot access resources it doesn't use.
+
+| Role | Attached to | Permissions |
+|------|-------------|-------------|
+| `createOrder-role` | createOrder | DynamoDB PutItem (Orders), DynamoDB PutItem/GetItem/UpdateItem/DeleteItem (Idempotency), SQS SendMessage, X-Ray, CloudWatch Logs |
+| `processOrder-role` | processOrder | DynamoDB GetItem (Orders), SFN StartExecution, X-Ray, CloudWatch Logs |
+| `reserveInventory-role` | reserveInventory | DynamoDB UpdateItem (Inventory), X-Ray, CloudWatch Logs |
+| `releaseInventory-role` | releaseInventory | DynamoDB UpdateItem (Inventory), X-Ray, CloudWatch Logs |
+| `processPayment-role` | processPayment | DynamoDB UpdateItem (Orders), X-Ray, CloudWatch Logs |
+| `refundPayment-role` | refundPayment | DynamoDB UpdateItem (Orders), X-Ray, CloudWatch Logs |
+| `confirmOrder-role` | confirmOrder | DynamoDB UpdateItem (Orders), X-Ray, CloudWatch Logs |
+| `failOrder-role` | failOrder | DynamoDB UpdateItem (Orders), X-Ray, CloudWatch Logs |
+| `emitEvent-role` | emitEvent | DynamoDB GetItem (Orders), EventBridge PutEvents, X-Ray, CloudWatch Logs |
+| `replayDlq-role` | replayDlq | SQS ReceiveMessage (DLQ) + SendMessage (main queue), X-Ray, CloudWatch Logs |
+| `getOrder-role` | getOrder | DynamoDB GetItem + Query (Orders), X-Ray, CloudWatch Logs |
+| `stepfunctions-role` | Step Functions | Lambda InvokeFunction (saga Lambdas only) |
+
+**Tip:** Use a Terraform `locals` block with a role-definition map to avoid repetition, then `for_each` over it.
+
+### 1.3 Lambda Layer (Shared Dependencies)
+
+A Lambda Layer packages shared runtime dependencies and utility code so every function uses the same versions without bundling them individually. This reduces deployment size and ensures consistency.
+
+**Directory:** `backend/layers/shared-deps/`
+
+**File:** `backend/layers/shared-deps/package.json`
+
+| Dependency | Version | Purpose |
+|------------|---------|---------|
+| `@aws-sdk/client-dynamodb` | `^3.x` | DynamoDB operations |
+| `@aws-sdk/lib-dynamodb` | `^3.x` | DynamoDB document client (marshalling) |
+| `@aws-sdk/client-sqs` | `^3.x` | SQS send/receive messages |
+| `@aws-sdk/client-sfn` | `^3.x` | Start Step Functions executions |
+| `@aws-sdk/client-eventbridge` | `^3.x` | Put events to EventBridge |
+| `@aws-lambda-powertools/logger` | `^2.x` | Structured JSON logging with correlation IDs |
+| `@aws-lambda-powertools/tracer` | `^2.x` | X-Ray tracing with automatic AWS SDK instrumentation |
+| `@aws-lambda-powertools/metrics` | `^2.x` | Custom CloudWatch metrics (EMF) |
+| `@aws-lambda-powertools/idempotency` | `^2.x` | Idempotency for createOrder (DynamoDB-backed) |
+| `@middy/core` | `^5.x` | Lambda middleware engine (used by Powertools) |
+
+> **Note:** AWS SDK v3 is included in the Node.js 20.x runtime but bundling it in the layer pins the version and enables X-Ray auto-capture via Powertools Tracer. The `uuid` package is dropped — use `crypto.randomUUID()` (built into Node 20).
+
+**Build script:** `backend/layers/shared-deps/build_layer.sh`
+
+```bash
+#!/bin/bash
+set -e
+cd "$(dirname "$0")"
+rm -rf nodejs package
+mkdir -p nodejs
+cp package.json nodejs/
+cd nodejs && npm install --omit=dev
+cd ..
+zip -r shared-deps-layer.zip nodejs/
+echo "Layer artifact: shared-deps-layer.zip"
+```
+
+**Layer structure (required by AWS):**
+
+```
+shared-deps-layer.zip
+└── nodejs/
+    ├── package.json
+    └── node_modules/
+        ├── @aws-sdk/client-dynamodb/
+        ├── @aws-sdk/lib-dynamodb/
+        ├── @aws-sdk/client-sqs/
+        ├── @aws-sdk/client-sfn/
+        ├── @aws-sdk/client-eventbridge/
+        ├── @aws-lambda-powertools/logger/
+        ├── @aws-lambda-powertools/tracer/
+        ├── @aws-lambda-powertools/metrics/
+        ├── @aws-lambda-powertools/idempotency/
+        └── @middy/core/
+```
+
+**Terraform:** `infrastructure/lambda_layer.tf`
+
+| Task | Details |
+|------|---------|
+| `aws_lambda_layer_version` | Name: `dev-ser-ord-sys-shared-deps` |
+| Compatible runtimes | `["nodejs20.x"]` |
+| Source | `backend/layers/shared-deps/shared-deps-layer.zip` |
+| `source_code_hash` | `filebase64sha256("...shared-deps-layer.zip")` — redeploys layer only when zip changes |
+| Description | AWS SDK clients, Lambda Powertools, shared utilities |
+
+**Utility modules included in layer:** `backend/layers/shared-deps/nodejs/lib/`
+
+| Module | File | Exports |
+|--------|------|---------|
+| Response helper | `response.mjs` | `success(body)`, `error(statusCode, message)` |
+| DynamoDB client | `dynamodb.mjs` | Pre-configured `DynamoDBDocumentClient` with Tracer |
+| SQS client | `sqs.mjs` | Pre-configured `SQSClient` with Tracer |
+| Step Functions client | `sfn.mjs` | Pre-configured `SFNClient` with Tracer |
+| EventBridge client | `eventbridge.mjs` | Pre-configured `EventBridgeClient` with Tracer |
+
+> **Logger and Tracer are NOT wrapped in lib files** — each Lambda instantiates its own `Logger` and `Tracer` with the function's `serviceName` for proper correlation.
+
+Lambda functions import from the layer at runtime:
+
+```javascript
+// In any Lambda handler — no local node_modules needed
+import { Logger } from '@aws-lambda-powertools/logger';
+import { Tracer } from '@aws-lambda-powertools/tracer';
+import { success, error } from '/opt/nodejs/lib/response.mjs';
+import { docClient } from '/opt/nodejs/lib/dynamodb.mjs';
+
+const logger = new Logger({ serviceName: 'createOrder' });
+const tracer = new Tracer({ serviceName: 'createOrder' });
+```
+
+### 1.4 Create Order Lambda (API Lambda)
+
+**File:** `backend/lambdas/orders/createOrder/index.mjs`
+
+| Task | Details |
+|------|---------|
+| Validate incoming request body | `userId`, `items[]`, `totalAmount` required || Wrapped with `makeIdempotent` | Powertools hashes the request `body`, stores in Idempotency table. Duplicate payloads within 1 hour return cached response without re-executing || Generate `orderId` (UUID) | Use `crypto.randomUUID()` |
+| Idempotent write to Orders table | `ConditionExpression: attribute_not_exists(orderId)` |
+| Set initial status | `PENDING` |
+| Send message to SQS | Include `orderId` in message body |
+| Return `201` with `orderId` | |
+
+### 1.5 Terraform for Create Order Lambda
+
+**File:** `infrastructure/lambda.tf`
+
+| Task | Details |
+|------|---------|
+| `data "archive_file"` for createOrder | Auto-zip source on `terraform apply` |
+| `aws_lambda_function` for createOrder | Runtime, handler, env vars, timeout, memory |
+| `source_code_hash` | `data.archive_file.createOrder.output_base64sha256` — redeploys only on code change |
+| Attach Lambda Layer | `layers = [aws_lambda_layer_version.shared_deps.arn]` |
+| Attach per-Lambda IAM role | `role = aws_iam_role.createOrder.arn` |
+| Powertools env vars | `POWERTOOLS_SERVICE_NAME`, `POWERTOOLS_LOG_LEVEL`, `POWERTOOLS_TRACER_CAPTURE_RESPONSE` |
+| Idempotency env var | `IDEMPOTENCY_TABLE = aws_dynamodb_table.idempotency.name` |
+| CloudWatch log group | `/aws/lambda/createOrder`, 14-day retention |
+| Lambda permission for API Gateway | (wired in Phase 2) |
+
+> **Pattern for all Lambdas:** Every function in `lambda.tf` should follow this template — `archive_file` → `aws_lambda_function` (with layer + own role + Powertools env vars) → `aws_cloudwatch_log_group`. Use `for_each` or Terraform modules to avoid repetition across 11 functions.
+
+### 1.6 Seed Inventory Data (helper script)
+
+**File:** `scripts/seed_inventory.sh` (or `.mjs`)
+
+| Task | Details |
+|------|---------|
+| Insert sample products | 5–10 products with stock quantities |
+| Use AWS CLI `put-item` | Idempotent, safe to re-run |
+
+### Phase 1 — Definition of Done
+
+- [x] `.gitignore` committed — build artifacts excluded
+- [x] Terraform remote backend configured (`terraform init` migrates to S3)
+- [x] `outputs.tf` stubs created (values populate as resources are added)
+- [x] `terraform apply` creates DynamoDB tables (Orders with GSI, Inventory, Idempotency)
+- [x] Lambda Layer built and published with Powertools + AWS SDK clients
+- [x] createOrder Lambda deploys with layer attached and per-function IAM role
+- [x] Shared utility imports (`/opt/nodejs/lib/*`) and Powertools resolve correctly at runtime
+- [x] Idempotent write verified (duplicate `orderId` rejected)
+- [x] Powertools Idempotency verified (same request body returns cached response, no duplicate order created)
 
 ---
 
-### Step 5: Inventory Lambdas
-**Depends on:** Steps 3, 4  
-**Unblocks:** Step 8 (saga)
+## Phase 2 — API Gateway + Queue Layer
 
+> **Goal:** Expose a public endpoint and buffer orders through SQS.
+
+### 2.1 API Gateway (REST)
+
+**File:** `infrastructure/api_gateway.tf`
+
+| Task | Details |
+|------|---------|
+| Create REST API | `dev-ser-ord-sys-api` |
+| `POST /orders` resource + method | Integration with createOrder Lambda |
+| **Request validation** | Add JSON Schema model on `POST /orders` — API Gateway rejects malformed requests *before* Lambda is invoked (saves cost + catches bad input at the edge) |
+| `GET /orders/{orderId}` resource + method | Integration with getOrder Lambda — returns order status |
+| Deploy stage | `dev` |
+| Enable throttling | 200 req/s burst, 100 req/s sustained |
+| Enable CloudWatch logging | Access + execution logs |
+
+**Request model (JSON Schema):**
+
+```json
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "type": "object",
+  "required": ["userId", "items", "totalAmount"],
+  "properties": {
+    "userId": { "type": "string", "minLength": 1 },
+    "items": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["productId", "qty"],
+        "properties": {
+          "productId": { "type": "string" },
+          "qty": { "type": "integer", "minimum": 1 }
+        }
+      }
+    },
+    "totalAmount": { "type": "number", "minimum": 0.01 }
+  }
+}
 ```
-Create:
-  src/lambdas/reserve-inventory/
-    handler.ts    — TransactWriteItems across shards; wrapped in makeIdempotent()
-  src/lambdas/compensate-inventory/
-    handler.ts    — Inverse TransactWriteItems; idempotent
-  src/lambdas/get-inventory/
-    handler.ts    — Query all shards for a product, sum availableQty
-  src/lambdas/inventory-admin/
-    handler.ts    — Create/redistribute shards for a product
 
-  infrastructure/modules/lambda/inventory.tf
-    - Lambda functions + scoped IAM roles
-    - ReserveInventory role: dynamodb:UpdateItem on InventoryShards, 
-      dynamodb:PutItem/GetItem/UpdateItem/DeleteItem on Idempotency,
-      dynamodb:PutItem on Orders (reservation record)
-```
+### 2.2 SQS Queue + Dead Letter Queue
 
-Verify: seed inventory shards → invoke ReserveInventory → verify shard decremented → invoke Compensate → verify restored. Run twice to confirm idempotency.
+**File:** `infrastructure/sqs.tf`
+
+| Task | Details |
+|------|---------|
+| Create main queue | `dev-ser-ord-sys-order-queue` |
+| Create DLQ | `dev-ser-ord-sys-order-dlq` |
+| Redrive policy | `maxReceiveCount: 3` → DLQ |
+| Visibility timeout | 6× Lambda timeout (e.g. 180s) |
+| Message retention | 4 days (DLQ: 14 days) |
+
+### 2.3 Processor Lambda (SQS consumer)
+
+**File:** `backend/lambdas/orders/processOrder/index.mjs`
+
+| Task | Details |
+|------|---------|
+| SQS event source mapping | Batch size 10, max concurrency configured |
+| Parse order message | Extract `orderId` |
+| **Idempotent saga start** | Use `orderId` as Step Functions execution `name` — AWS automatically rejects duplicate executions. This prevents the same order from triggering multiple saga runs if SQS delivers the message more than once |
+| Handle partial batch failures | Return `batchItemFailures` |
+
+**File:** `infrastructure/lambda.tf` (append)
+
+| Task | Details |
+|------|---------|
+| `aws_lambda_function` for processOrder | |
+| `aws_lambda_event_source_mapping` | SQS → processOrder |
+
+### 2.4 DLQ Replay Lambda
+
+**File:** `backend/lambdas/orders/replayDlq/index.mjs`
+
+| Task | Details |
+|------|---------|
+| Read from DLQ | Manual invocation or scheduled |
+| Re-send messages to main queue | With deduplication |
+
+### 2.5 Get Order Lambda
+
+**File:** `backend/lambdas/orders/getOrder/index.mjs`
+
+| Task | Details |
+|------|---------||
+| `GET /orders/{orderId}` handler | Extract `orderId` from path parameters |
+| DynamoDB GetItem on Orders table | Return full order record |
+| Return `200` with order data | Or `404` if not found |
+| Used during load test | To verify orders reached `CONFIRMED` / `FAILED` status |
+
+### Phase 2 — Definition of Done
+
+- [x] `POST /orders` returns `201` via API Gateway
+- [x] Malformed requests rejected by API Gateway request validator (never hit Lambda)
+- [x] `GET /orders/{orderId}` returns order status
+- [x] Message appears in SQS
+- [x] processOrder Lambda triggered by SQS
+- [x] Duplicate `orderId` execution names rejected by Step Functions
+- [x] Failed messages land in DLQ after 3 retries
 
 ---
 
-### Step 6: Order Lambdas
-**Depends on:** Steps 3, 4  
-**Unblocks:** Step 8 (saga)
+## Phase 3 — Saga Orchestration (Step Functions)
+
+> **Goal:** Implement the full saga workflow with compensation.
+
+### 3.1 Step Functions State Machine
+
+**File:** `infrastructure/step_functions.tf`
+
+| Task | Details |
+|------|---------|
+| Define state machine (ASL JSON) | Linear saga with catch blocks |
+| IAM role for Step Functions | Invoke Lambdas |
+| Express workflow type | For high throughput (< 5 min duration) |
+
+### 3.2 Saga Step Lambdas
+
+Each Lambda is a small, single-purpose function:
+
+| Lambda | File | Action | Compensation |
+|--------|------|--------|--------------|
+| **reserveInventory** | `backend/lambdas/orders/reserveInventory/index.mjs` | Decrement `stock` with condition `stock >= qty` | releaseInventory |
+| **releaseInventory** | `backend/lambdas/orders/releaseInventory/index.mjs` | Increment `stock` back | — |
+| **processPayment** | `backend/lambdas/orders/processPayment/index.mjs` | Simulate payment (random failure via `FAIL_PAYMENT_PERCENT`) | refundPayment |
+| **refundPayment** | `backend/lambdas/orders/refundPayment/index.mjs` | Log refund action | — |
+| **confirmOrder** | `backend/lambdas/orders/confirmOrder/index.mjs` | Update order status → `CONFIRMED` | — |
+| **failOrder** | `backend/lambdas/orders/failOrder/index.mjs` | Update order status → `FAILED`, record failure reason | — |
+
+### 3.3 State Machine Flow (ASL)
 
 ```
-Create:
-  src/lambdas/create-order/
-    handler.ts    — Conditional PutItem; transitions RESERVED → CONFIRMED
-  src/lambdas/delete-order/
-    handler.ts    — Compensation: delete or mark FAILED
+StartAt: ReserveInventory
 
-  infrastructure/modules/lambda/orders.tf
-    - Lambda functions + IAM roles (dynamodb on Orders table only)
+ReserveInventory
+  ├─ Success → ProcessPayment
+  └─ Catch  → FailOrder
+
+ProcessPayment
+  ├─ Success → ConfirmOrder
+  └─ Catch  → ReleaseInventory → FailOrder
+
+ConfirmOrder
+  ├─ Success → EmitOrderPlaced
+  └─ Catch  → RefundPayment → ReleaseInventory → FailOrder
+
+EmitOrderPlaced
+  └─ End
 ```
 
-Verify: invoke CreateOrder with mock data → item in Orders table → invoke DeleteOrder → item removed/marked.
+### 3.4 Retry Configuration (per state)
+
+```json
+{
+  "Retry": [
+    {
+      "ErrorEquals": ["States.TaskFailed"],
+      "IntervalSeconds": 2,
+      "MaxAttempts": 3,
+      "BackoffRate": 2.0
+    }
+  ]
+}
+```
+
+### 3.5 Failure Injection
+
+**Environment variable on processPayment Lambda:**
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `FAIL_PAYMENT_PERCENT` | `20` | % of payments that fail randomly |
+
+### Phase 3 — Definition of Done
+
+- [x] Step Functions execution completes the happy path
+- [x] Inventory decremented and order marked CONFIRMED
+- [x] Payment failure triggers compensation (release inventory, fail order)
+- [x] Inventory reservation failure immediately fails saga
+- [x] All states have retry + catch configured
 
 ---
 
-### Step 7: Payment Lambdas
-**Depends on:** Steps 3, 4  
-**Unblocks:** Step 8 (saga)
+## Phase 4 — Event Publishing (EventBridge)
 
-```
-Create:
-  src/lambdas/process-payment/
-    handler.ts    — Stripe/PayPal call (mock for portfolio); timeout + circuit breaker
-  src/lambdas/refund-payment/
-    handler.ts    — Idempotent refund
+> **Goal:** Publish domain events for downstream consumers.
 
-  infrastructure/modules/lambda/payments.tf
-    - Lambda functions + IAM roles
-    - Secrets Manager secret for payment API key (can be a placeholder)
-```
+### 4.1 EventBridge Setup
 
-Verify: invoke ProcessPayment with mock → returns success. Invoke with simulated failure → throws PaymentError.
+**File:** `infrastructure/eventbridge.tf`
 
----
+| Task | Details |
+|------|---------|
+| Create custom event bus | `dev-ser-ord-sys-events` |
+| Event rule for `OrderPlaced` | Pattern: `{ "detail-type": ["OrderPlaced"] }` |
+| Target: CloudWatch log group | For observability of events |
+| (Optional) Target: SNS or another Lambda | Sample consumer |
 
-### Step 8: Step Functions Saga
-**Depends on:** Steps 5, 6, 7 (all saga Lambdas)  
-**Unblocks:** Steps 16, 17 (APIs)
+### 4.2 Emit Event Lambda
 
-```
-Create:
-  src/step-functions/order-saga.asl.json
-    States:
-      1. ValidateInput    (Pass/Lambda)
-      2. ReserveInventory (Lambda, retry 2x, catch → END)
-      3. ProcessPayment   (Lambda, retry 1x, timeout 60s, catch → CompensateInventory → END)
-      4. CreateOrder      (Lambda, retry 2x, catch → RefundPayment → CompensateInventory → END)
-      5. NotifyUser       (Lambda, retry 2x, catch → log + continue)
-      6. Success          (Succeed)
-    Compensation states:
-      - CompensateInventory → CompensateInventory Lambda
-      - RefundPayment → RefundPayment Lambda
-      - PersistSagaFailure → write to SagaState + SNS
+**File:** `backend/lambdas/orders/emitEvent/index.mjs`
 
-  infrastructure/modules/step_functions/main.tf
-    - Express state machine
-    - IAM role: invoke all saga Lambdas
-    - CloudWatch Logs log group
-```
+| Task | Details |
+|------|---------|
+| Called as last saga step | After confirmOrder succeeds |
+| Put event to EventBridge | Source: `ordering-system`, detail-type: `OrderPlaced` |
+| Include order payload | `orderId`, `userId`, `totalAmount`, `timestamp` |
 
-Verify:
-- Happy path: start execution → all steps succeed → order in DynamoDB
-- Payment fail: inventory restored, no order
-- Order fail: payment refunded, inventory restored
-- View execution in Step Functions console (screenshot for portfolio)
+### Phase 4 — Definition of Done
+
+- [x] `OrderPlaced` event visible in CloudWatch Logs
+- [x] EventBridge rule matches and routes correctly
+- [x] Event schema documented
 
 ---
 
-### Step 9: Catalog Lambdas
-**Depends on:** Steps 3, 4  
-**Unblocks:** Steps 16, 17 (APIs need these for queries)
+## Phase 5 — Observability
 
-```
-Create:
-  src/lambdas/get-product/handler.ts
-  src/lambdas/list-products/handler.ts     — paginated, CategoryIndex query
-  src/lambdas/get-order/handler.ts         — auth-scoped (own orders or admin)
-  src/lambdas/list-orders/handler.ts       — paginated
-  src/lambdas/list-categories/handler.ts
+> **Goal:** Full visibility into system health and performance.
 
-  infrastructure/modules/lambda/catalog.tf
-```
+### 5.1 X-Ray Tracing
 
-Verify: seed Products + Categories → invoke ListProducts with category filter + pagination → correct results.
+**File:** `infrastructure/lambda.tf` (update)
 
----
+| Task | Details |
+|------|---------|
+| Enable `tracing_config { mode = "Active" }` | All Lambdas |
+| X-Ray SDK already in Lambda Layer | `aws-xray-sdk-core` captures AWS SDK calls automatically |
+| Enable on API Gateway | Stage-level setting |
+| Enable on Step Functions | `tracingConfiguration` |
 
-### Step 10: Admin Lambdas
-**Depends on:** Steps 3, 4  
-**Unblocks:** Steps 16, 17
+### 5.2 Structured Logging
 
-```
-Create:
-  src/lambdas/category-admin/handler.ts    — Create/update/soft-delete
+**File:** Already in Lambda Layer at `nodejs/lib/logger.mjs`
 
-  infrastructure/modules/lambda/admin.tf
-```
+| Task | Details |
+|------|---------|
+| JSON-structured logger | Uses `console.log(JSON.stringify(...))` |
+| Correlation ID | Propagate `orderId` through all logs |
+| Log levels | INFO, WARN, ERROR |
+| All Lambdas import from layer | `import { logger } from '/opt/nodejs/lib/logger.mjs'` |
 
-Verify: create category → update name → soft delete → ListCategories excludes deleted.
+### 5.3 CloudWatch Dashboard
 
----
+**File:** `infrastructure/cloudwatch.tf`
 
-### Step 11: Reservation Expiry Lambda
-**Depends on:** Step 3 (Orders stream), Step 5 (CompensateInventory)  
-**Unblocks:** nothing (safety net, runs async)
+| Task | Details |
+|------|---------|
+| Create dashboard | `dev-ser-ord-sys-dashboard` |
+| Widget: Orders/sec | API Gateway `Count` metric |
+| Widget: Saga success vs failure | Step Functions `ExecutionsSucceeded` / `ExecutionsFailed` |
+| Widget: DLQ depth | SQS `ApproximateNumberOfMessagesVisible` |
+| Widget: P95 Lambda duration | Per-function latency |
+| Widget: Concurrent executions | Lambda `ConcurrentExecutions` |
 
-```
-Create:
-  src/lambdas/reservation-expiry/
-    handler.ts    — DynamoDB Stream consumer; on REMOVE of RESERVED order → CompensateInventory
+### 5.4 CloudWatch Alarms
 
-  infrastructure/modules/lambda/expiry.tf
-    - Event source mapping: Orders stream → this Lambda
-    - Filter: eventName = REMOVE AND status = RESERVED
-```
+| Alarm | Threshold | Action |
+|-------|-----------|--------|
+| DLQ depth > 10 | 10 messages | SNS notification |
+| Saga failure rate > 30% | 30% over 5 min | SNS notification |
+| API 5xx rate > 5% | 5% over 5 min | SNS notification |
 
-Verify: insert a RESERVED order with expiresAt in the past → wait for TTL deletion → verify inventory shard restored.
+### Phase 5 — Definition of Done
 
----
-
-### Step 12: SQS Queue + DLQ
-**Depends on:** Step 1  
-**Unblocks:** Step 13 (trigger Lambda)
-
-```
-Create:
-  infrastructure/modules/sqs/main.tf
-    - order-requests queue
-    - order-requests-dlq (maxReceiveCount: 3)
-    - Encryption at rest (SSE-SQS)
-```
-
-Verify: send a test message → visible in queue → consume it.
+- [x] Traces visible end-to-end in X-Ray console (via Powertools Tracer)
+- [x] Structured logs with correlation IDs in CloudWatch (via Powertools Logger)
+- [x] Custom metrics emitted to CloudWatch namespace `OrderingSystem` (via Powertools Metrics)
+- [x] Dashboard shows all widgets with live data
+- [x] Alarms fire correctly on simulated failures
 
 ---
 
-### Step 13: SQS Trigger Lambda
-**Depends on:** Steps 8, 12  
-**Unblocks:** Steps 16, 17 (API can now enqueue orders)
+## Phase 5.5 — Unit & Integration Tests
 
-```
-Create:
-  src/lambdas/start-order-saga/
-    handler.ts    — Reads SQS message → starts Step Functions execution (orderId as execution name for dedupe)
+> **Goal:** Validate Lambda handler logic before deploying to AWS.
 
-  infrastructure/modules/lambda/trigger.tf
-    - Event source mapping: SQS → Lambda (batch size 1)
-    - IAM: sqs:ReceiveMessage + states:StartExecution
-```
+### Test Framework Setup
 
-Verify: send message to SQS → saga executes → order in DynamoDB.
+**File:** `tests/package.json`
 
----
+| Dependency | Purpose |
+|------------|---------||
+| `vitest` (or `jest`) | Test runner |
+| `@aws-sdk/client-dynamodb` | Type definitions for mocking |
+| `aws-sdk-client-mock` | Mock AWS SDK v3 clients |
 
-### Step 14: SNS Topics
-**Depends on:** Step 1  
-**Unblocks:** Step 15
+### Unit Tests
 
-```
-Create:
-  infrastructure/modules/sns/main.tf
-    - order-confirmed topic
-    - order-failed topic
-    - saga-failures topic (ops alerts)
-```
+**Directory:** `tests/unit/`
 
----
+| Test File | Covers | Key Assertions |
+|-----------|--------|-----------------|
+| `createOrder.test.mjs` | createOrder handler | Validates request, writes to DynamoDB, sends SQS message, rejects duplicates |
+| `reserveInventory.test.mjs` | reserveInventory | Decrements stock, throws on insufficient stock |
+| `processPayment.test.mjs` | processPayment | Succeeds normally, fails at configured percentage |
+| `confirmOrder.test.mjs` | confirmOrder | Updates status to CONFIRMED |
+| `failOrder.test.mjs` | failOrder | Updates status to FAILED with reason |
+| `emitEvent.test.mjs` | emitEvent | Publishes correct event shape to EventBridge |
+| `getOrder.test.mjs` | getOrder | Returns order or 404 |
+| `processOrder.test.mjs` | processOrder | Starts execution with orderId as name, handles batch failures |
 
-### Step 15: NotifyUser Lambda
-**Depends on:** Steps 4, 14  
-**Unblocks:** nothing (already wired into saga at Step 8)
+### Integration Tests (optional, against deployed stack)
 
-```
-Create:
-  src/lambdas/notify-user/
-    handler.ts    — Publish to SNS topic based on order status
+**Directory:** `tests/integration/`
 
-  infrastructure/modules/lambda/notifications.tf
-```
+| Test File | Covers |
+|-----------|--------|
+| `orderFlow.test.mjs` | POST order → check SQS → verify DynamoDB status after saga completes |
 
-Verify: invoke with mock order → message published to SNS topic.
+### Commands
 
----
-
-### Step 16: AppSync API
-**Depends on:** Steps 2, 8, 9, 10, 12, 13  
-**Unblocks:** Step 18 (WAF)
-
-```
-Create:
-  infrastructure/modules/appsync/main.tf
-    - GraphQL schema
-    - Lambda resolvers for each query/mutation
-    - Cognito auth for mutations, API key for public queries
-    - Subscription: onOrderStatusChange
-  src/appsync/schema.graphql
-```
-
-Verify: run queries/mutations via AppSync console; test auth (customer can't access admin mutations).
-
----
-
-### Step 17: API Gateway REST
-**Depends on:** Steps 2, 9, 10, 12, 13  
-**Unblocks:** Step 18 (WAF)
-
-```
-Create:
-  infrastructure/modules/api_gateway/main.tf
-    - REST API with /v1/* prefix
-    - All endpoints from the plan
-    - Cognito authorizer for protected routes
-    - API Key for public routes
-    - JSON Schema request validation
-    - CORS configuration
-    - Stage: dev
-```
-
-Verify: curl all endpoints; verify auth, validation, pagination, CORS headers.
-
----
-
-### Step 18: WAF + Security Tightening
-**Depends on:** Steps 16, 17  
-**Unblocks:** nothing (hardening pass)
-
-```
-Create:
-  infrastructure/modules/security/main.tf
-    - WAF WebACL on API Gateway + AppSync
-    - Rate limit rule (2000 req/5min per IP)
-    - AWS managed rule sets
-
-Audit:
-  - Review all Lambda IAM roles — remove any * actions
-  - Ensure all tables have SSE + PITR
-  - Verify Secrets Manager for payment keys
+```bash
+cd tests
+npm install
+npm test              # Run all unit tests
+npm run test:int      # Run integration tests (requires deployed stack)
 ```
 
 ---
 
-### Step 19: CloudWatch Dashboards + Alarms
-**Depends on:** Steps 8, 12, 16, 17 (needs deployed resources to monitor)  
-**Unblocks:** nothing (observability pass)
+## Phase 6 — Load Testing & Performance Validation
 
-```
-Create:
-  infrastructure/modules/monitoring/main.tf
-    - Dashboard: orders/min, success %, compensation %, Lambda errors, DLQ depth
-    - Alarms: Lambda errors >5%, DLQ >0, DynamoDB throttles >0, saga compensation >2%
-    - X-Ray: enable on all Lambdas (POWERTOOLS_TRACER_CAPTURE_RESPONSE=true)
-```
+> **Goal:** Prove the system handles 10,000 orders/min sustained.
 
-Verify: trigger an alarm intentionally → SNS notification received.
+### 6.1 k6 Test Script
 
----
+**File:** `tests/load/k6_order_test.js`
 
-### Step 20: Integration Tests
-**Depends on:** Steps 16 or 17 (needs a working API)  
-**Unblocks:** Step 21
+| Task | Details |
+|------|---------|
+| Ramp-up | 0 → 167 VUs over 1 minute |
+| Sustained load | 167 VUs for 10 minutes (~10k orders/min) |
+| Ramp-down | 167 → 0 over 1 minute |
+| Assertions | P95 < 500ms, success rate > 95% |
 
-```
-Create:
-  tests/integration/
-    order-happy-path.test.ts
-    order-payment-failure.test.ts
-    order-inventory-exhausted.test.ts
-    order-idempotency.test.ts
-    catalog-pagination.test.ts
-    auth-access-control.test.ts
-```
+### 6.2 Concurrency Tuning
 
----
+**File:** `infrastructure/lambda.tf` (update)
 
-### Step 21: Load / Concurrency Tests
-**Depends on:** Step 20  
-**Unblocks:** nothing (final validation)
+| Task | Details |
+|------|---------|
+| Reserved concurrency on processOrder | `100` (tunable) |
+| SQS `MaximumConcurrency` | Match reserved concurrency |
+| Provisioned concurrency (optional) | Reduce cold starts |
 
-```
-Create:
-  tests/load/
-    k6-concurrent-orders.js    — 50 threads, same SKU, verify 0 oversells
-    k6-mixed-workload.js       — reads + writes at target throughput
-```
+### 6.3 Results Capture
 
-Verify: zero oversells. Screenshot the k6 output for portfolio.
+**File:** `tests/load/results/`
+
+| Task | Details |
+|------|---------|
+| Export k6 summary JSON | `--out json=results.json` |
+| Screenshot CloudWatch dashboard | Before/during/after |
+| Document findings | `tests/load/RESULTS.md` |
+
+### Phase 6 — Definition of Done
+
+- [x] Sustained 10k orders/min for 10 minutes
+- [x] P95 latency < 500ms
+- [x] DLQ depth stays near 0 (excluding injected failures)
+- [x] Compensation rate aligns with `FAIL_PAYMENT_PERCENT`
+- [x] Results documented with metrics
 
 ---
 
-## Quick Reference: What Blocks What
+## File Manifest (Final State)
 
-| If this isn't done... | ...these are blocked |
-|---|---|
-| Terraform backend (1) | Everything |
-| DynamoDB tables (3) | All Lambdas, saga, APIs |
-| Lambda layer (4) | All Lambdas |
-| Inventory Lambdas (5) | Saga (8) |
-| Order Lambdas (6) | Saga (8) |
-| Payment Lambdas (7) | Saga (8) |
-| Step Functions (8) | APIs routing to order creation |
-| SQS + trigger (12, 13) | Async order flow through APIs |
-| Cognito (2) | Auth on APIs |
+```
+SERVERLESS_ORDERING_SYSTEM/
+├── .gitignore                                  ← Exclude build artifacts, .terraform, node_modules
+├── BUILD_ORDER.md                              ← This file
+├── project_details.md
+├── README.md
+│
+├── backend/
+│   ├── layers/
+│   │   └── shared-deps/
+│   │       ├── package.json                    ← Powertools + AWS SDK dependencies
+│   │       ├── build_layer.sh                  ← Build + zip the layer
+│   │       ├── shared-deps-layer.zip           ← Built artifact (gitignored)
+│   │       └── nodejs/
+│   │           ├── node_modules/               ← Installed deps (gitignored)
+│   │           └── lib/
+│   │               ├── response.mjs            ← HTTP response helper
+│   │               ├── dynamodb.mjs            ← DynamoDB document client (Tracer-wrapped)
+│   │               ├── sqs.mjs                 ← SQS client (Tracer-wrapped)
+│   │               ├── sfn.mjs                 ← Step Functions client (Tracer-wrapped)
+│   │               └── eventbridge.mjs         ← EventBridge client (Tracer-wrapped)
+│   └── lambdas/
+│       └── orders/
+│           ├── createOrder/index.mjs           ← API: validate + write + enqueue
+│           ├── getOrder/index.mjs              ← API: get order by ID or query by userId
+│           ├── processOrder/index.mjs          ← SQS consumer → start saga (idempotent)
+│           ├── reserveInventory/index.mjs      ← Saga step 1
+│           ├── releaseInventory/index.mjs      ← Compensation: undo reservation
+│           ├── processPayment/index.mjs        ← Saga step 2 (failure injection)
+│           ├── refundPayment/index.mjs         ← Compensation: undo payment
+│           ├── confirmOrder/index.mjs          ← Saga step 3
+│           ├── failOrder/index.mjs             ← Mark order FAILED
+│           ├── emitEvent/index.mjs             ← Publish to EventBridge
+│           └── replayDlq/index.mjs             ← DLQ replay utility
+│
+├── infrastructure/
+│   ├── main.tf                                 ← Provider config (exists)
+│   ├── backend.tf                              ← S3 remote state + DynamoDB locking
+│   ├── variables.tf                            ← Variables (exists)
+│   ├── var.tfvars                              ← Variable values (exists)
+│   ├── outputs.tf                              ← API URL, table ARNs, queue URLs, etc.
+│   ├── dynamodb.tf                             ← Orders (+ GSI) + Inventory tables
+│   ├── iam.tf                                  ← Per-Lambda IAM roles + policies
+│   ├── lambda_layer.tf                         ← Lambda Layer definition
+│   ├── lambda.tf                               ← All Lambda functions (archive_file + layer + role)
+│   ├── api_gateway.tf                          ← REST API + POST /orders + GET /orders/{id} + request validation
+│   ├── sqs.tf                                  ← Queue + DLQ
+│   ├── step_functions.tf                       ← Saga state machine (Express)
+│   ├── eventbridge.tf                          ← Event bus + rules
+│   └── cloudwatch.tf                           ← Dashboard + alarms
+│
+├── scripts/
+│   └── seed_inventory.sh                       ← Seed products into DynamoDB
+│
+└── tests/
+    ├── package.json                            ← Test framework deps (vitest, sdk-mock)
+    ├── unit/                                   ← Unit tests for each Lambda handler
+    │   ├── createOrder.test.mjs
+    │   ├── getOrder.test.mjs
+    │   ├── processOrder.test.mjs
+    │   ├── reserveInventory.test.mjs
+    │   ├── processPayment.test.mjs
+    │   ├── confirmOrder.test.mjs
+    │   ├── failOrder.test.mjs
+    │   └── emitEvent.test.mjs
+    ├── integration/                            ← Integration tests (against deployed stack)
+    │   └── orderFlow.test.mjs
+    └── load/
+        ├── k6_order_test.js                    ← k6 load test script
+        └── results/
+            └── RESULTS.md                      ← Performance findings
+```
 
-## What Can Be Built in Parallel
+---
 
-| Parallel Track A | Parallel Track B | Parallel Track C |
-|---|---|---|
-| Cognito (2) | DynamoDB tables (3) | SQS + DLQ (12) |
-| — | Lambda Layer (4) | SNS topics (14) |
-| — | Inventory Lambdas (5) | — |
-| — | Order Lambdas (6) | — |
-| — | Payment Lambdas (7) | — |
-| Catalog Lambdas (9) | Step Functions (8) | Admin Lambdas (10) |
-| AppSync (16) | API Gateway (17) | Monitoring (19) |
+## Dependency Graph
+
+```
+Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4
+                                       │
+                                       ▼
+                                   Phase 5 ──► Phase 5.5 ──► Phase 6
+```
+
+- **Phase 1** is a prerequisite for everything (.gitignore, remote backend, data layer, Lambda Layer, first Lambda).
+- **Phase 2** depends on Phase 1 (needs tables + createOrder Lambda + layer).
+- **Phase 3** depends on Phase 2 (processOrder triggers saga).
+- **Phase 4** depends on Phase 3 (emitEvent is the last saga step).
+- **Phase 5** can be partially done in parallel with Phases 2–4 (Powertools is already in the layer), but dashboards/alarms need metrics from running services.
+- **Phase 5.5** unit tests can be written incrementally alongside each phase; integration tests require the full stack.
+- **Phase 6** requires all prior phases to be functional.
+
+---
+
+## Lambda Layer — Dependencies & Connections Map
+
+This section documents which AWS SDK clients and shared utilities each Lambda function uses via the shared layer.
+
+### Layer Import Paths
+
+All Lambdas import shared code from the layer at `/opt/nodejs/` (AWS Lambda Layer mount point):
+
+| Import | Path at Runtime |
+|--------|----------------|
+| AWS SDK packages | `/opt/nodejs/node_modules/@aws-sdk/*` (auto-resolved by Node) |
+| Powertools Logger | `/opt/nodejs/node_modules/@aws-lambda-powertools/logger` |
+| Powertools Tracer | `/opt/nodejs/node_modules/@aws-lambda-powertools/tracer` |
+| Powertools Metrics | `/opt/nodejs/node_modules/@aws-lambda-powertools/metrics` |
+| Powertools Idempotency | `/opt/nodejs/node_modules/@aws-lambda-powertools/idempotency` |
+| Response helper | `/opt/nodejs/lib/response.mjs` |
+| DynamoDB client | `/opt/nodejs/lib/dynamodb.mjs` |
+| SQS client | `/opt/nodejs/lib/sqs.mjs` |
+| Step Functions client | `/opt/nodejs/lib/sfn.mjs` |
+| EventBridge client | `/opt/nodejs/lib/eventbridge.mjs` |
+
+### Per-Lambda Dependency Matrix
+
+| Lambda | DynamoDB | SQS | Step Functions | EventBridge | Response | Logger | Tracer | Metrics | Idempotency |
+|--------|:--------:|:---:|:--------------:|:-----------:|:--------:|:------:|:------:|:-------:|:-----------:|
+| **createOrder** | ✅ PutItem | ✅ SendMessage | — | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **getOrder** | ✅ GetItem/Query | — | — | — | ✅ | ✅ | ✅ | — | — |
+| **processOrder** | ✅ GetItem | — | ✅ StartExecution | — | — | ✅ | ✅ | ✅ | — |
+| **reserveInventory** | ✅ UpdateItem | — | — | — | — | ✅ | ✅ | ✅ | — |
+| **releaseInventory** | ✅ UpdateItem | — | — | — | — | ✅ | ✅ | — | — |
+| **processPayment** | ✅ UpdateItem | — | — | — | — | ✅ | ✅ | ✅ | — |
+| **refundPayment** | ✅ UpdateItem | — | — | — | — | ✅ | ✅ | — | — |
+| **confirmOrder** | ✅ UpdateItem | — | — | — | — | ✅ | ✅ | — | — |
+| **failOrder** | ✅ UpdateItem | — | — | — | — | ✅ | ✅ | ✅ | — |
+| **emitEvent** | ✅ GetItem | — | — | ✅ PutEvents | — | ✅ | ✅ | ✅ | — |
+| **replayDlq** | — | ✅ Receive+Send | — | — | — | ✅ | ✅ | — | — |
+
+### Service Connection Diagram
+
+```
+                          ┌──────────────────────────────────────────┐
+                          │         Lambda Layer (shared-deps)       │
+                          │                                          │
+                          │  @aws-sdk/client-dynamodb                │
+                          │  @aws-sdk/lib-dynamodb                   │
+                          │  @aws-sdk/client-sqs                     │
+                          │  @aws-sdk/client-sfn                     │
+                          │  @aws-sdk/client-eventbridge             │
+                          │  @aws-lambda-powertools/logger           │
+                          │  @aws-lambda-powertools/tracer           │
+                          │  @aws-lambda-powertools/metrics          │
+                          │  @aws-lambda-powertools/idempotency      │
+                          │  lib/response.mjs                        │
+                          │  lib/dynamodb.mjs → DynamoDB Client      │
+                          │  lib/sqs.mjs → SQS Client                │
+                          │  lib/sfn.mjs → SFN Client                │
+                          │  lib/eventbridge.mjs → EB Client         │
+                          └──────────┬───────────────────────────────┘
+                                     │ attached to ALL Lambdas
+        ┌────────────────────────────┼────────────────────────────────┐
+        │                            │                                │
+        ▼                            ▼                                ▼
+┌───────────────┐  ┌──────────────────────────┐  ┌───────────────────────────┐
+│  API Gateway  │  │   SQS (order-queue)      │  │   Step Functions (Express) │
+│  POST /orders │  │                          │  │   (saga state machine)    │
+│  GET /orders/ │  │                          │  │                           │
+└───────┬───────┘  └──────────┬───────────────┘  └─────────┬─────────────────┘
+        │                     │                            │
+        ├─► createOrder ──► SQS processOrder ──────►    Saga Steps:
+        │   (DynamoDB write)      (starts execution,       ┌─ reserveInventory ──► DynamoDB (Inventory)
+        │                          orderId as exec name)   ├─ processPayment ───► DynamoDB (Orders)
+        │                                                  ├─ confirmOrder ─────► DynamoDB (Orders)
+        │                                                  └─ emitEvent ────────► EventBridge
+        │                                                  Compensations:
+        │                                                  ├─ releaseInventory ─► DynamoDB (Inventory)
+        │                                                  ├─ refundPayment ────► DynamoDB (Orders)
+        │                                                  └─ failOrder ────────► DynamoDB (Orders)
+        │
+        └─► getOrder                      DLQ ◄── failed SQS messages
+            (DynamoDB read/query)           │
+                                            ▼
+                                        replayDlq ───► SQS (re-enqueue)
+```
+
+### Environment Variables (per Lambda, passed via Terraform)
+
+| Variable | Used By | Source |
+|----------|---------|--------|
+| `ORDERS_TABLE` | createOrder, getOrder, confirmOrder, failOrder, processPayment, refundPayment, emitEvent | `aws_dynamodb_table.orders.name` |
+| `INVENTORY_TABLE` | reserveInventory, releaseInventory | `aws_dynamodb_table.inventory.name` |
+| `IDEMPOTENCY_TABLE` | createOrder | `aws_dynamodb_table.idempotency.name` |
+| `ORDER_QUEUE_URL` | createOrder, replayDlq | `aws_sqs_queue.order_queue.url` |
+| `DLQ_URL` | replayDlq | `aws_sqs_queue.order_dlq.url` |
+| `STATE_MACHINE_ARN` | processOrder | `aws_sfn_state_machine.saga.arn` |
+| `EVENT_BUS_NAME` | emitEvent | `aws_cloudwatch_event_bus.orders.name` |
+| `FAIL_PAYMENT_PERCENT` | processPayment | Hardcoded or from `var.tfvars` |
+| `POWERTOOLS_SERVICE_NAME` | All Lambdas | Set to function name (e.g. `createOrder`) |
+| `POWERTOOLS_LOG_LEVEL` | All Lambdas | `INFO` (dev) / `WARN` (prod) |
+| `POWERTOOLS_TRACER_CAPTURE_RESPONSE` | All Lambdas | `true` |
+| `POWERTOOLS_METRICS_NAMESPACE` | All Lambdas | `OrderingSystem` |
+
+### Layer Update Workflow
+
+When dependencies change:
+
+```bash
+# 1. Update package.json in the layer
+cd backend/layers/shared-deps
+vim package.json
+
+# 2. Rebuild the zip
+bash build_layer.sh
+
+# 3. Terraform detects the new zip hash and publishes a new layer version
+cd ../../../infrastructure
+terraform apply -var-file="var.tfvars"
+
+# 4. All Lambdas automatically get the latest layer version
+#    (Terraform updates the layer ARN reference)
+```
+
+---
+
+## Estimated Effort
+
+| Phase | Effort | Notes |
+|-------|--------|-------|
+| Phase 1 | 4–5 hours | .gitignore, remote backend, outputs, tables (GSI), IAM (per-Lambda), Lambda Layer (Powertools), first Lambda |
+| Phase 2 | 3–4 hours | API Gateway (+ request validation + GET endpoint), SQS, processor Lambda |
+| Phase 3 | 4–6 hours | Step Functions (Express) + 6 saga Lambdas + ASL |
+| Phase 4 | 1–2 hours | EventBridge bus, rule, emitEvent Lambda |
+| Phase 5 | 2–3 hours | Powertools Tracer/Logger/Metrics config, dashboard, alarms |
+| Phase 5.5 | 2–3 hours | Unit tests (vitest + aws-sdk-client-mock), integration test |
+| Phase 6 | 2–3 hours | k6 script, tuning, results capture |
+| **Total** | **~18–26 hours** | |
+
+---
+
+## Quick Reference: Key Commands
+
+```bash
+# Terraform
+cd infrastructure
+terraform init
+terraform plan -var-file="var.tfvars"
+terraform apply -var-file="var.tfvars"
+
+# Build Lambda Layer
+cd backend/layers/shared-deps && bash build_layer.sh && cd -
+
+# Seed inventory
+bash scripts/seed_inventory.sh
+
+# Test createOrder locally
+aws lambda invoke --function-name dev-ser-ord-sys-createOrder \
+  --payload '{"body":"{\"userId\":\"u1\",\"items\":[{\"productId\":\"p1\",\"qty\":2}],\"totalAmount\":50}"}' \
+  /dev/stdout
+
+# Get order status
+aws lambda invoke --function-name dev-ser-ord-sys-getOrder \
+  --payload '{"pathParameters":{"orderId":"<ORDER_ID>"}}' \
+  /dev/stdout
+
+# Run unit tests
+cd tests && npm test
+
+# Run load test
+k6 run tests/load/k6_order_test.js
+
+# Check DLQ depth
+aws sqs get-queue-attributes \
+  --queue-url <DLQ_URL> \
+  --attribute-names ApproximateNumberOfMessagesVisible
+```

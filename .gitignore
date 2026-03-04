@@ -1,0 +1,12 @@
+.terraform/
+*.tfstate
+*.tfstate.backup
+.terraform.tfstate
+.terraform.tfstate.backup
+*.log
+node_modules/
+*.zip
+.DS_Store
+*.tfvars
+*.tfvars.json
+*.tfvars
