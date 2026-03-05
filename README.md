@@ -33,23 +33,23 @@ flowchart TD
     end
 
     subgraph API["🛡️ API Gateway"]
-        B["📋 JSON Schema\nValidation"]
-        B2["🚦 Throttling\n200 burst / 100 sustained"]
+        B["📋 JSON Schema<br/>Validation"]
+        B2["🚦 Throttling<br/>200 burst / 100 sustained"]
     end
 
     subgraph Create["⚡ createOrder Lambda"]
-        C1["🔑 Idempotency Check\n(Powertools body hash)"]
-        C2["💾 Write to DynamoDB\n(status: PENDING)"]
+        C1["🔑 Idempotency Check<br/>(Powertools body hash)"]
+        C2["💾 Write to DynamoDB<br/>(status: PENDING)"]
         C3["📨 Enqueue to SQS"]
     end
 
     subgraph Queue["📬 SQS"]
         D1["📥 Order Queue"]
-        D2["☠️ Dead Letter Queue\n(after 3 failures)"]
+        D2["☠️ Dead Letter Queue<br/>(after 3 failures)"]
     end
 
     subgraph Process["⚡ processOrder Lambda"]
-        E["🚀 Start Saga\n(orderId as execution name)"]
+        E["🚀 Start Saga<br/>(orderId as execution name)"]
     end
 
     subgraph Saga["🔁 Step Functions Express — Order Saga"]
@@ -90,17 +90,17 @@ When a step fails, the saga doesn't just stop — it **undoes** everything that 
 flowchart LR
     subgraph Happy["✅ Happy Path"]
         direction LR
-        H1["📦 Reserve\nInventory"] --> H2["💳 Process\nPayment"] --> H3["✅ Confirm\nOrder"] --> H4["📡 Emit\nEvent"]
+        H1["📦 Reserve<br/>Inventory"] --> H2["💳 Process<br/>Payment"] --> H3["✅ Confirm<br/>Order"] --> H4["📡 Emit<br/>Event"]
     end
 
     subgraph Fail1["❌ Payment Fails"]
         direction LR
-        X1["📦 Reserve\nInventory ✓"] --> X2["💳 Payment\n✗ FAILS"] --> X3["📦 Release\nInventory ↩️"] --> X4["❌ Fail\nOrder"]
+        X1["📦 Reserve<br/>Inventory ✓"] --> X2["💳 Payment<br/>✗ FAILS"] --> X3["📦 Release<br/>Inventory ↩️"] --> X4["❌ Fail<br/>Order"]
     end
 
     subgraph Fail2["❌ Confirm Fails"]
         direction LR
-        Y1["📦 Reserve ✓\n💳 Payment ✓"] --> Y2["✅ Confirm\n✗ FAILS"] --> Y3["💳 Refund\nPayment ↩️"] --> Y4["📦 Release\nInventory ↩️"] --> Y5["❌ Fail\nOrder"]
+        Y1["📦 Reserve ✓<br/>💳 Payment ✓"] --> Y2["✅ Confirm<br/>✗ FAILS"] --> Y3["💳 Refund<br/>Payment ↩️"] --> Y4["📦 Release<br/>Inventory ↩️"] --> Y5["❌ Fail<br/>Order"]
     end
 
     style Happy fill:#0d7377,stroke:#14ffec,color:#fff
@@ -224,11 +224,11 @@ A custom event bus (`dev-ser-ord-sys-events`) receives `OrderPlaced` events. An 
 
 ```mermaid
 flowchart LR
-    A["⚡ emitEvent\nLambda"] -->|PutEvents| B["🚌 Custom\nEvent Bus"]
-    B --> C{"📋 order-placed-rule\nsource: ordering-system\ndetail-type: OrderPlaced"}
-    C --> D["📊 CloudWatch\nLogs"]
-    C -. "future" .-> E["📧 SNS\nNotification"]
-    C -. "future" .-> F["⚡ Analytics\nLambda"]
+    A["⚡ emitEvent<br/>Lambda"] -->|PutEvents| B["🚌 Custom<br/>Event Bus"]
+    B --> C{"📋 order-placed-rule<br/>source: ordering-system<br/>detail-type: OrderPlaced"}
+    C --> D["📊 CloudWatch<br/>Logs"]
+    C -. "future" .-> E["📧 SNS<br/>Notification"]
+    C -. "future" .-> F["⚡ Analytics<br/>Lambda"]
 
     style A fill:#1a1a2e,stroke:#e94560,color:#fff
     style B fill:#0f3460,stroke:#53a8b6,color:#fff
