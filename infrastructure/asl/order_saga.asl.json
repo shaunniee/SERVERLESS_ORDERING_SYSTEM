@@ -1,0 +1,143 @@
+{
+  "Comment": "Order Processing Saga — reserves inventory, processes payment, confirms order. Compensates on failure.",
+  "StartAt": "ReserveInventory",
+  "States": {
+    "ReserveInventory": {
+      "Type": "Task",
+      "Resource": "${reserve_inventory_arn}",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "FailOrder"
+        }
+      ],
+      "Next": "ProcessPayment"
+    },
+
+    "ProcessPayment": {
+      "Type": "Task",
+      "Resource": "${process_payment_arn}",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "ReleaseInventory"
+        }
+      ],
+      "Next": "ConfirmOrder"
+    },
+
+    "ConfirmOrder": {
+      "Type": "Task",
+      "Resource": "${confirm_order_arn}",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "RefundPayment"
+        }
+      ],
+      "Next": "EmitOrderPlaced"
+    },
+
+    "EmitOrderPlaced": {
+      "Type": "Task",
+      "Resource": "${emit_event_arn}",
+      "Comment": "Publish OrderPlaced domain event to EventBridge",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "End": true
+    },
+
+    "ReleaseInventory": {
+      "Type": "Task",
+      "Resource": "${release_inventory_arn}",
+      "Comment": "Compensation: release reserved inventory after payment failure",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "FailOrder"
+    },
+
+    "RefundPayment": {
+      "Type": "Task",
+      "Resource": "${refund_payment_arn}",
+      "Comment": "Compensation: refund payment after confirm failure",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "CompensateReleaseInventory"
+    },
+
+    "CompensateReleaseInventory": {
+      "Type": "Task",
+      "Resource": "${release_inventory_arn}",
+      "Comment": "Compensation: release inventory after refund (confirm failed path)",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "FailOrder"
+    },
+
+    "FailOrder": {
+      "Type": "Task",
+      "Resource": "${fail_order_arn}",
+      "Comment": "Terminal: mark order as FAILED with reason",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "End": true
+    }
+  }
+}
