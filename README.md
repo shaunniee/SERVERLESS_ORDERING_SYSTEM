@@ -8,36 +8,7 @@ A high-throughput, event-driven order processing system built entirely on AWS se
 
 ## Architecture
 
-```
-Client
-  │
-  ▼
-API Gateway (REST)
-  │
-  ├─ POST /orders ──► createOrder Lambda
-  │                      │
-  │                      ├──► DynamoDB (Orders table, status: PENDING)
-  │                      └──► SQS Order Queue
-  │                              │
-  │                              ▼
-  │                        processOrder Lambda
-  │                              │
-  │                              ▼
-  │                     Step Functions (Express)
-  │                     ┌────────────────────────────┐
-  │                     │ 1. Reserve Inventory       │
-  │                     │ 2. Process Payment         │
-  │                     │ 3. Confirm Order           │
-  │                     │ 4. Emit Event (EventBridge)│
-  │                     │                            │
-  │                     │ Compensation on failure:   │
-  │                     │  └─ Release Inventory      │
-  │                     │  └─ Refund Payment         │
-  │                     │  └─ Fail Order             │
-  │                     └────────────────────────────┘
-  │
-  └─ GET /orders/{orderId} ──► getOrder Lambda ──► DynamoDB
-```
+![alt text](Architecture_orders_system.drawio.png)
 
 ## Key Design Decisions
 
