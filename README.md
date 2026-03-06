@@ -367,7 +367,8 @@ The `EmitOrderPlaced` saga step has retries but no Catch block. If EventBridge p
 ├── 📄 api_gateway.tf          # REST API, routes, JSON Schema validation
 ├── 📄 step_functions.tf       # Express state machine (saga)
 ├── 📄 eventbridge.tf          # Custom event bus + rules + log target
-├── 📁 asl/
+├── � cloudwatch.tf           # Dashboard, alarms, SNS topic
+├── �📁 asl/
 │   └── 📄 order_saga.asl.json # Amazon States Language definition
 ├── 📁 iam/
 │   └── 📁 policies/           # Per-Lambda IAM policy modules
@@ -459,7 +460,28 @@ Every Lambda is instrumented with **AWS Lambda Powertools**:
 | 📊 **Metrics** | Custom CloudWatch metrics: `OrderCreated`, `PaymentFailed`, `InventoryReserved`, etc. |
 
 All AWS SDK clients in the shared layer are wrapped with `tracer.captureAWSv3Client()`, so the full request journey — from API Gateway through Lambda, DynamoDB, SQS, Step Functions, and EventBridge — is visible as a **single distributed trace** in X-Ray.
+### 📈 CloudWatch Dashboard
 
+A unified dashboard (`dev-ser-ord-sys-dashboard`) provides real-time visibility across 6 widget rows:
+
+| Row | Widgets |
+|:---:|--------|
+| 1 | API Gateway — request count, latency percentiles (P50/P95/P99), 4xx/5xx errors |
+| 2 | Step Functions — saga success vs failure, execution duration, throttles |
+| 3 | SQS — messages sent/received/deleted, DLQ depth, oldest message age |
+| 4 | Lambda duration P95 — API functions and saga step functions |
+| 5 | Lambda errors and concurrent executions across all functions |
+| 6 | Custom Powertools metrics — order lifecycle and payment/inventory events |
+
+### 🚨 CloudWatch Alarms
+
+| Alarm | Condition | Action |
+|:-----:|:---------:|:------:|
+| DLQ Depth | > 10 messages visible | SNS notification |
+| Saga Failure Rate | > 30% over 5 minutes | SNS notification |
+| API 5xx Rate | > 5% over 5 minutes | SNS notification |
+
+All alarms send to the `dev-ser-ord-sys-alarms` SNS topic. Subscribe an email or Slack webhook to receive alerts.
 ---
 
 ## 📚 Documentation

@@ -1,0 +1,26 @@
+{
+  "name": "ordering-system-tests",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:int": "vitest run --config vitest.int.config.mjs"
+  },
+  "devDependencies": {
+    "vitest": "^3.0.0",
+    "aws-sdk-client-mock": "^4.1.0",
+    "@aws-sdk/client-dynamodb": "^3.700.0",
+    "@aws-sdk/lib-dynamodb": "^3.700.0",
+    "@aws-sdk/client-sqs": "^3.700.0",
+    "@aws-sdk/client-sfn": "^3.700.0",
+    "@aws-sdk/client-eventbridge": "^3.700.0",
+    "@aws-lambda-powertools/logger": "^2.12.0",
+    "@aws-lambda-powertools/tracer": "^2.12.0",
+    "@aws-lambda-powertools/metrics": "^2.12.0",
+    "@aws-lambda-powertools/idempotency": "^2.12.0",
+    "@middy/core": "^5.5.0"
+  }
+}
